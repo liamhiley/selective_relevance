@@ -1,0 +1,9 @@
+*.mp4
+*.avi
+*.tar*
+*.gz*
+*.bin
+*.pth
+*.pt
+old
+venv
