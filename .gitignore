@@ -3,6 +3,8 @@
 *.tar*
 *.gz*
 *.bin
+*.pickle
+*.obj
 *.pth
 *.pt
 old
