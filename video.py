@@ -50,7 +50,7 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16):
         batch.append(frames)
     return vid,batch
 
-def write_video(path,frames):
+def write_video(path,frames,**kargs):
     """
     Write to an .mp4 file from a list of frames
 
@@ -59,13 +59,6 @@ def write_video(path,frames):
         frames (list of np.ndarrays): list of frames to write to the video
     """
     with imageio.get_writer(path, mode='I', **kargs) as writer:
-        idcs = []
         for frame in frames:
-            idx = ""
-            for c in frame:
-                if c.isdigit():
-                    idx += c
-            idcs.append(int(idx))
-        frames = [frame for _, frame in sorted(zip(idcs, frames))]
-        for frame in frames:
+            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
             writer.append_data(frame)
