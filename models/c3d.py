@@ -16,7 +16,7 @@ class C3D(nn.Module):
         else:
             self.lib = torchexplain
         self.layer1 = nn.Sequential(
-            self.lib.Conv3d(3, 64, kernel_size=(3, 3, 3), padding=(1, 1, 1)),
+            self.lib.Conv3d(3, 64, kernel_size=(3, 3, 3), padding=(1, 1, 1),range=range),
             self.lib.ReLU(inplace=True),
             self.lib.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
         )
