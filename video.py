@@ -50,6 +50,16 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16):
         batch.append(frames)
     return vid,batch
 
+def get_class_dict_from_index_file(class_file_path):
+    class_dict = {}
+    with open(class_file_path,"r") as f:
+        class_file = f.readlines()
+    for line in class_file:
+        ind, action = line.split()
+        class_dict[ind - 1] = action
+    return class_dict
+
+
 def write_video(path,frames,**kargs):
     """
     Write to an .mp4 file from a list of frames
