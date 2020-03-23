@@ -91,6 +91,8 @@ def get_exp(inp,mdl,target=-1):
     for e in range(exp_vis.shape[0]):
         exp_vis[e,...] /= abs(exp_vis[e,...]).max()
     # exp_vis /= abs(exp_vis).max()
+    if target < 0:
+        return exp_vis, target
     return exp_vis
 
 def show_image(img,name):
