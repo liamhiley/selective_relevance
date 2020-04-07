@@ -2,7 +2,7 @@
 
 import sys
 from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout, QShortcut
-from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QPen, QCursor, QKeySequence
+from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QPen, QCursor, QKeySequence, QPalette
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize
 
 class AppWindow(QMainWindow):
@@ -40,17 +40,20 @@ class RelevanceCanvas(QWidget):
 
         # set the background to the initial frame
         self.image = QImage(img)
+
+        # "colour modes" for frame, i.e. relevant or irrelevant
+        self.falseColor = QColor(0,0,0,127)
+        self.trueColor = Qt.transparent
+
         # set opaque overlay for frame
-        self.drawOverlay = QImage(self.size(),QImage.Format_Indexed8)
-        self.drawOverlay.setColorTable([Qt.transparent, QColor(0,0,0,127).rgb()])
-        self.drawOverlay.fill(QColor(0,0,0,127))
+        self.drawOverlay = QImage(self.size(),QImage.Format_ARGB32)
+        self.drawOverlay.fill(self.falseColor)
 
         self.drawing = False
+        self.cursor = True
 
         # default brushes
         self._clear_size = 60
-        # draw
-        # self.drawBrush =
 
         # set keybindings for reveal and replace modes
         self.shortcut = QShortcut(QKeySequence("D"), self)
@@ -59,6 +62,7 @@ class RelevanceCanvas(QWidget):
         self.shortcut.activated.connect(self.setEraseCursor)
 
     def paintEvent(self,event):
+        # draw frame and overlay
         canvasPainter = QPainter(self)
         canvasPainter.drawImage(self.rect(),self.image,self.image.rect())
         canvasPainter.drawImage(self.rect(),self.drawOverlay,self.drawOverlay.rect())
@@ -70,27 +74,27 @@ class RelevanceCanvas(QWidget):
 
     def mouseMoveEvent(self,event):
         if event.buttons() and Qt.LeftButton and self.drawing:
-            painter = QPainter(self.drawOverlay)
             # painter.QPen(QColor(0,0,0,127))
             rect = QRect(QPoint(), self._clear_size*QSize())
             rect.moveCenter(event.pos())
-            bg = self.image
-            if self.drawing:
+            bg = self.drawOverlay
+            painter = QPainter(bg)
+            if self.cursor:
                 # get rectangle positions
                 for y in range(rect.bottom(),rect.top()):
                     for x in range(rect.right(),rect.left()):
-                        colour_at_pos = bg.pixelColor(x,y)
+                        pos = QPoint(x,y)
+                        colour_at_pos = self.falseColor if bg.pixelColor(x,y) == self.trueColor else self.trueColor
                         # print(colour_at_pos)
                         painter.setPen(QPen(colour_at_pos))
                         painter.drawPoint(x,y)
                 # painter.drawRect(rect)
-
             else:
-                # painter.save()
-                # painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                painter.save()
+                painter.setCompositionMode(QPainter.CompositionMode_Clear)
                 painter.eraseRect(rect)
                 # painter.fillRect(rect,QColor(0,0,0,127))
-                # painter.restore()
+                painter.restore()
             self.lastPoint = self.mapToGlobal(event.pos())
             self.update()
             painter.end()
@@ -101,16 +105,16 @@ class RelevanceCanvas(QWidget):
             self.drawing = False
 
     def setDrawCursor(self):
-        self.drawing = True
+        self.cursor = True
         self.setCursor()
     def setEraseCursor(self):
-        self.drawing = False
+        self.cursor = False
         self.setCursor()
 
     def setCursor(self):
         pixmap = QPixmap(QSize(1,1)*self._clear_size)
-        if self.drawing:
-            pixmap.fill(QColor(0,0,0,127))
+        if self.cursor:
+            pixmap.fill(self.falseColor)
         else:
             pixmap.fill(Qt.transparent)
         painter = QPainter(pixmap)
@@ -121,8 +125,33 @@ class RelevanceCanvas(QWidget):
         QApplication.setOverrideCursor(cursor)
 
 
+def set_dark_fusion(qApp):
+    #https://gist.github.com/lschmierer/443b8e21ad93e2a2d7eb#file-dark_fusion-py
+    qApp.setStyle("Fusion")
+
+    dark_palette = QPalette()
+
+    dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+    dark_palette.setColor(QPalette.WindowText, Qt.white)
+    dark_palette.setColor(QPalette.Base, QColor(25, 25, 25))
+    dark_palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
+    dark_palette.setColor(QPalette.ToolTipBase, Qt.white)
+    dark_palette.setColor(QPalette.ToolTipText, Qt.white)
+    dark_palette.setColor(QPalette.Text, Qt.white)
+    dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+    dark_palette.setColor(QPalette.ButtonText, Qt.white)
+    dark_palette.setColor(QPalette.BrightText, Qt.red)
+    dark_palette.setColor(QPalette.Link, QColor(42, 130, 218))
+    dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+    dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+
+    qApp.setPalette(dark_palette)
+
+    qApp.setStyleSheet("QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }")
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    set_dark_fusion(app)
 
     window = AppWindow()
     window.show()
