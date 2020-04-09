@@ -3,6 +3,7 @@ import torch
 import numpy as np
 import cv2
 import imageio
+import pdb
 
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16):
     """
@@ -19,7 +20,7 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16):
     rdr = cv2.VideoCapture(path)
     offsets = int(rdr.get(cv2.CAP_PROP_FRAME_COUNT)//sample_len)
     if shape is None:
-        shape = (rdr.get(cv2.CAP_PROP_FRAME_HEIGHT),rdr.get(cv2.CAP_PROP_FRAME_WIDTH))
+        shape = (int(rdr.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(rdr.get(cv2.CAP_PROP_FRAME_WIDTH)))
     else:
         shape = tuple(shape)
     vid = torch.zeros((offsets,3,sample_len) + shape).requires_grad_()
@@ -72,3 +73,7 @@ def write_video(path,frames,**kargs):
         for frame in frames:
             frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
             writer.append_data(frame)
+
+if __name__ == "__main__":
+    pdb.set_trace()
+    get_input("dashboard_examples/fighting.mp4",(112,112))
