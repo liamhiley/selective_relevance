@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 
 import sys
-from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout, QShortcut
+import pdb
+
+from PyQt5.QtWidgets import QWidget, QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QGridLayout, QShortcut, QPushButton, QFileDialog
 from PyQt5.QtGui import QPixmap, QImage, QColor, QPainter, QPen, QCursor, QKeySequence, QPalette
 from PyQt5.QtCore import Qt, QRect, QPoint, QSize
+
+import video
+import cv2
 
 class AppWindow(QMainWindow):
     def __init__(self):
@@ -12,6 +17,8 @@ class AppWindow(QMainWindow):
         self.setGeometry(top, left, width, height)
         self.setWindowTitle("Relevance Painter")
         self.setCentralWidget(RelevancePainter((top,left,width,height)))
+        self.setFixedSize(width,height)
+
 
 class RelevancePainter(QWidget):
     def __init__(self,geometry):
@@ -19,24 +26,27 @@ class RelevancePainter(QWidget):
         # set layout of painter
 
         layout = QGridLayout()
-        self.geometry = geometry
         self.spacing = 10
         layout.setSpacing(self.spacing)
-        canvas = RelevanceCanvas("me_and_gimli.jpg",geometry+(self.spacing,))
-        layout.addWidget(canvas,1,0,3,3)
+        # canvas widget that displays image and facilitates drawing
+        self.canvas = RelevanceCanvas("me_and_gimli.jpg",geometry+(self.spacing,))
+        # button widget for reading in video dialogue
+        loadFileBtn = QPushButton("Read in video", self)
+        loadFileBtn.clicked.connect(self.loadFile)
+
+        layout.addWidget(self.canvas,1,0,3,3)
+        layout.addWidget(loadFileBtn, 4,3,1,1)
         self.setLayout(layout)
 
-class RelevanceCanvas(QWidget):
-    def __init__(self, img,geometry):
-        super().__init__()
+    def loadFile(self, path):
+        name = QFileDialog.getOpenFileName(self, "Open Video")[0]
+        self.canvas.setImage(name)
 
-        # We need to update the widgets geometry to account for it being nested in a main window
-        top,left,width,height,spacing = geometry
-        top += spacing
-        left += spacing
-        width -= spacing
-        height -= spacing
-        self.setGeometry(top, left, width, height)
+
+
+class RelevanceCanvas(QWidget):
+    def __init__(self, img,mainWindow):
+        super().__init__()
 
         # set the background to the initial frame
         self.image = QImage(img)
@@ -55,11 +65,31 @@ class RelevanceCanvas(QWidget):
         # default brushes
         self._clear_size = 60
 
+        self.setCursor()
+
         # set keybindings for reveal and replace modes
-        self.shortcut = QShortcut(QKeySequence("D"), self)
-        self.shortcut.activated.connect(self.setDrawCursor)
         self.shortcut = QShortcut(QKeySequence("E"), self)
+        self.shortcut.activated.connect(self.setDrawCursor)
+        self.shortcut = QShortcut(QKeySequence("D"), self)
         self.shortcut.activated.connect(self.setEraseCursor)
+
+
+    def resizeEvent(self,event):
+        # We need to update the widgets geometry to account for it being nested in a main window
+        overlayR = QRect(0,0,self.drawOverlay.width(),self.drawOverlay.height())
+        r = self.geometry()
+        # self.layoutRatio = (overlayR.width()/parR.width(),overlayR.height()/parR.height())
+        self.layoutRatio = (overlayR.width()/r.width(),overlayR.height()/r.height())
+        # store offsets, and ratios for transforming mouse pos
+        super().resizeEvent(event)
+
+
+    def enterEvent(self,event):
+        self.setCursor()
+        super().enterEvent(event)
+    def leaveEvent(self,event):
+        self.setCursor()
+        super().leaveEvent(event)
 
     def paintEvent(self,event):
         # draw frame and overlay
@@ -75,19 +105,33 @@ class RelevanceCanvas(QWidget):
     def mouseMoveEvent(self,event):
         if event.buttons() and Qt.LeftButton and self.drawing:
             # painter.QPen(QColor(0,0,0,127))
-            rect = QRect(QPoint(), self._clear_size*QSize())
-            rect.moveCenter(event.pos())
+            # rect = QRect(QPoint(), self._clear_size*QSize())
+            rect = QRect(
+                QPoint(),
+                QSize(
+                    int(self._clear_size)+5,
+                    int(self._clear_size)-6,
+                )
+            )
+            x, y = event.pos().x()*self.layoutRatio[0], event.pos().y()*self.layoutRatio[1]
+            epos = QPoint(x,y)
+            # epos = event.pos()
+
+            rect.moveCenter(epos)
             bg = self.drawOverlay
             painter = QPainter(bg)
+            # painter.translate(self.left,self.top)
+            # painter.scale(self.height,self.width)
             if self.cursor:
-                # get rectangle positions
-                for y in range(rect.bottom(),rect.top()):
-                    for x in range(rect.right(),rect.left()):
+                for y in range(rect.top(),rect.bottom()):
+                    for x in range(rect.left(),rect.right()):
                         pos = QPoint(x,y)
-                        colour_at_pos = self.falseColor if bg.pixelColor(x,y) == self.trueColor else self.trueColor
+                        if not bg.valid(pos):
+                            continue
+                        colour_at_pos = self.falseColor if bg.pixelColor(pos) == self.trueColor else self.trueColor
                         # print(colour_at_pos)
                         painter.setPen(QPen(colour_at_pos))
-                        painter.drawPoint(x,y)
+                        painter.drawPoint(pos)
                 # painter.drawRect(rect)
             else:
                 painter.save()
@@ -95,7 +139,7 @@ class RelevanceCanvas(QWidget):
                 painter.eraseRect(rect)
                 # painter.fillRect(rect,QColor(0,0,0,127))
                 painter.restore()
-            self.lastPoint = self.mapToGlobal(event.pos())
+            self.lastPoint = epos
             self.update()
             painter.end()
 
@@ -112,17 +156,36 @@ class RelevanceCanvas(QWidget):
         self.setCursor()
 
     def setCursor(self):
-        pixmap = QPixmap(QSize(1,1)*self._clear_size)
-        if self.cursor:
-            pixmap.fill(self.falseColor)
+        if self.underMouse():
+            pixmap = QPixmap(QSize(1,1)*self._clear_size)
+            if self.cursor:
+                pixmap.fill(self.falseColor)
+            else:
+                pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setPen(QPen(Qt.black,2))
+            painter.drawRect(pixmap.rect())
+            painter.end()
+            cursor = QCursor(pixmap)
+            QApplication.setOverrideCursor(cursor)
         else:
-            pixmap.fill(Qt.transparent)
-        painter = QPainter(pixmap)
-        painter.setPen(QPen(Qt.black,2))
-        painter.drawRect(pixmap.rect())
-        painter.end()
-        cursor = QCursor(pixmap)
-        QApplication.setOverrideCursor(cursor)
+            while QApplication.overrideCursor():
+                QApplication.restoreOverrideCursor()
+
+    def setImage(self,path):
+        _, frames = video.get_input(path)
+        print(len(frames))
+        key_frames = []
+        skip = len(frames[0])//4
+        for batch in frames:
+            for i in range(0,len(batch),skip):
+                key_frames.append(batch[i])
+        self.frames = key_frames
+        cvImg = cv2.cvtColor(key_frames[10],cv2.COLOR_BGR2RGB)
+        height, width, channel = cvImg.shape
+        bytesPerLine = 3 * width
+        self.image = QImage(cvImg.data, width, height, bytesPerLine, QImage.Format_RGB888)
+        self.update()
 
 
 def set_dark_fusion(qApp):
