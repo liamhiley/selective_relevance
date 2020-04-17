@@ -9,4 +9,5 @@
 *.pt
 old
 venv
+models/weights/*
 *__pycache__
