@@ -11,3 +11,5 @@ old
 venv
 models/weights/*
 *__pycache__
+test/*
+research/*
