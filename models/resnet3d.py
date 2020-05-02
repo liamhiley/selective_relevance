@@ -1,11 +1,17 @@
+import sys
 import math
 from functools import partial
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import importlib.util
+# spec = importlib.util.spec_from_file_location("torchexplain", "/home/hileyl/Projects/DAIS-ITA/Remote/torchexplain/torchexplain/__init__.py")
+# torchexplain = importlib.util.module_from_spec(spec)
+# spec.loader.exec_module(torchexplain)
 import torchexplain
+
+import pdb
 
 """
 author: https://github.com/kenshohara/3D-ResNets-PyTorch/
@@ -40,6 +46,7 @@ class BasicBlock(nn.Module):
         if train:
             self.lib = nn
         else:
+            self.eval()
             self.lib = torchexplain
 
         self.conv1 = conv3x3x3(in_planes, planes, stride, lib=self.lib)
@@ -63,7 +70,10 @@ class BasicBlock(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out += residual
+        if self.training:
+            out += residual
+        else:
+            out = self.lib.add(out,residual)
         out = self.relu(out)
 
         return out
@@ -106,7 +116,10 @@ class Bottleneck(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out += residual
+        if self.training:
+            out += residual
+        else:
+            out = self.lib.add(out,residual)
         out = self.relu(out)
 
         return out
@@ -125,6 +138,7 @@ class ResNet(nn.Module):
                  shortcut_type='B',
                  widen_factor=1.0,
                  num_classes=400,
+                 range=None,
                  train=False):
         super().__init__()
         if train:
@@ -137,17 +151,28 @@ class ResNet(nn.Module):
         self.in_planes = block_inplanes[0]
         self.no_max_pool = no_max_pool
 
-        self.conv1 = self.lib.Conv3d(n_input_chaself.libels,
-                               self.in_planes,
-                               kernel_size=(conv1_t_size, 7, 7),
-                               stride=(conv1_t_stride, 2, 2),
-                               padding=(conv1_t_size // 2, 3, 3),
-                               bias=False)
+        if train:
+            self.conv1 = self.lib.Conv3d(n_input_channels,
+                                   self.in_planes,
+                                   kernel_size=(conv1_t_size, 7, 7),
+                                   stride=(conv1_t_stride, 2, 2),
+                                   padding=(conv1_t_size // 2, 3, 3),
+                                   bias=False)
+        else:
+            self.conv1 = self.lib.Conv3d(n_input_channels,
+                                         self.in_planes,
+                                         kernel_size=(conv1_t_size, 7, 7),
+                                         stride=(conv1_t_stride, 2, 2),
+                                         padding=(conv1_t_size // 2, 3, 3),
+                                         bias=False,
+                                         range=range
+            )
         self.bn1 = self.lib.BatchNorm3d(self.in_planes)
         self.relu = self.lib.ReLU(inplace=True)
         self.maxpool = self.lib.MaxPool3d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, block_inplanes[0], layers[0],
-                                       shortcut_type)
+                                       shortcut_type,
+                                       train=train)
         self.layer2 = self._make_layer(block,
                                        block_inplanes[1],
                                        layers[1],
@@ -168,7 +193,7 @@ class ResNet(nn.Module):
                                        train=train)
 
         self.avgpool = self.lib.AdaptiveAvgPool3d((1, 1, 1))
-        self.fc = self.lib.Linear(block_inplanes[3] * block.expansion, n_classes)
+        self.fc = self.lib.Linear(block_inplanes[3] * block.expansion, num_classes)
 
         for m in self.modules():
             if isinstance(m, self.lib.Conv3d):
@@ -228,6 +253,7 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
+
 
         x = self.avgpool(x)
 
