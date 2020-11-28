@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import torch
 from torch import nn
-import torchexplain
+from .. import torchexplain
+import matplotlib.pyplot as plt
 
+import pdb
 
 # Number of blocks for different stages given the model depth.
 _MODEL_STAGE_DEPTH = {50: (3, 4, 6, 3), 101: (3, 4, 23, 3)}
@@ -26,6 +28,7 @@ class ResNetBasicStem(nn.Module):
             eps=1e-5,
             bn_mmt=0.1,
             norm_module=nn.BatchNorm3d,
+            range=(0,255),
             train=False,
     ):
         """
@@ -65,17 +68,29 @@ class ResNetBasicStem(nn.Module):
         self.eps = eps
         self.bn_mmt = bn_mmt
         # Construct the stem layer.
+        self.range=range
         self._construct_stem(dim_in, dim_out, norm_module)
 
     def _construct_stem(self, dim_in, dim_out, norm_module):
-        self.conv = self.lib.Conv3d(
-            dim_in,
-            dim_out,
-            self.kernel,
-            stride=self.stride,
-            padding=self.padding,
-            bias=False,
-        )
+        if self.training:
+            self.conv = self.lib.Conv3d(
+                dim_in,
+                dim_out,
+                self.kernel,
+                stride=self.stride,
+                padding=self.padding,
+                bias=False,
+            )
+        else:
+            self.conv = self.lib.Conv3d(
+                dim_in,
+                dim_out,
+                self.kernel,
+                stride=self.stride,
+                padding=self.padding,
+                bias=False,
+                range=self.range
+            )
         self.bn = norm_module(
             num_features=dim_out, eps=self.eps, momentum=self.bn_mmt
         )
@@ -84,11 +99,12 @@ class ResNetBasicStem(nn.Module):
             kernel_size=[1, 3, 3], stride=[1, 2, 2], padding=[0, 1, 1]
         )
 
-    def forward(self, x):
-        x = self.conv(x)
+    def forward(self, inp):
+        x = self.conv(inp)
         x = self.bn(x)
         x = self.relu(x)
         x = self.pool_layer(x)
+
         return x
 
 class VideoModelStem(nn.Module):
@@ -108,6 +124,7 @@ class VideoModelStem(nn.Module):
             eps=1e-5,
             bn_mmt=0.1,
             norm_module=nn.BatchNorm3d,
+            range=(0,255),
             train=False
     ):
         """
@@ -161,6 +178,7 @@ class VideoModelStem(nn.Module):
         self.inplace_relu = inplace_relu
         self.eps = eps
         self.bn_mmt = bn_mmt
+        self.range=range
         # Construct the stem layer.
         self._construct_stem(dim_in, dim_out, norm_module)
 
@@ -176,17 +194,16 @@ class VideoModelStem(nn.Module):
                 self.eps,
                 self.bn_mmt,
                 norm_module,
+                range=self.range,
                 train=self.training
             )
             self.add_module("pathway{}_stem".format(pathway), stem)
 
-    def forward(self, x):
-        assert (
-            len(x) == self.num_pathways
-        ), "Input tensor does not contain {} pathway".format(self.num_pathways)
-        for pathway in range(len(x)):
+    def forward(self, inp):
+        x = []
+        for pathway, i in enumerate(inp):
             m = getattr(self, "pathway{}_stem".format(pathway))
-            x[pathway] = m(x[pathway])
+            x.append(m(i))
         return x
 
 class FuseFastToSlow(nn.Module):
@@ -435,6 +452,8 @@ class BottleneckTransform(nn.Module):
     ):
         (str1x1, str3x3) = (stride, 1) if self._stride_1x1 else (1, stride)
 
+        if str1x1 > 1:
+            print("here")
         # Tx1x1, BN, ReLU.
         self.a = self.lib.Conv3d(
             dim_in,
@@ -615,9 +634,15 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         if hasattr(self, "branch1"):
-            x = self.branch1_bn(self.branch1(x)) + self.branch2(x)
+            if self.training:
+                x = self.branch1_bn(self.branch1(x)) + self.branch2(x)
+            else:
+                x = self.lib.add(self.branch1_bn(self.branch1(x)), self.branch2(x))
         else:
-            x = x + self.branch2(x)
+            if self.training:
+                x = x + self.branch2(x)
+            else:
+                x = self.lib.add(x, self.branch2(x))
         x = self.relu(x)
         return x
 
@@ -765,7 +790,10 @@ class Nonlocal(nn.Module):
 
         p = self.conv_out(theta_phi_g)
         p = self.bn(p)
-        return x_identity + p
+        if self.training:
+            return x_identity + p
+        else:
+            return self.lib.add(x_identity, p)
 
 class ResStage(nn.Module):
     """
@@ -1037,13 +1065,12 @@ class ResNetBasicHead(nn.Module):
             self.act = nn.Softmax(dim=4)
         elif act_func == "sigmoid":
             self.act = nn.Sigmoid()
-        elif act_func == "none":
-            self.act = False
         else:
-            raise NotImplementedError(
-                "{} is not supported as an activation"
-                "function.".format(act_func)
-            )
+            self.act = False
+            # raise NotImplementedError(
+            #     "{} is not supported as an activation"
+            #     "function.".format(act_func)
+            # )
 
     def forward(self, inputs):
         assert (
@@ -1057,7 +1084,7 @@ class ResNetBasicHead(nn.Module):
         # (N, C, T, H, W) -> (N, T, H, W, C).
         x = x.permute((0, 2, 3, 4, 1))
         # Perform dropout.
-        if hasattr(self, "dropout"):
+        if hasattr(self, "dropout") and self.training:
             x = self.dropout(x)
         x = self.projection(x)
 
@@ -1148,6 +1175,7 @@ class SlowFast(nn.Module):
                 [temp_kernel[0][1][0] // 2, 3, 3],
             ],
             norm_module=self.norm_module,
+            range=data["range"],
             train=self.training,
         )
         self.s1_fuse = FuseFastToSlow(
@@ -1316,8 +1344,8 @@ class SlowFast(nn.Module):
             train=self.training,
         )
 
-    def forward(self, x, bboxes=None):
-        x = self.s1(x)
+    def forward(self, inp, bboxes=None):
+        x = self.s1(inp)
         x = self.s1_fuse(x)
         x = self.s2(x)
         x = self.s2_fuse(x)
@@ -1335,9 +1363,9 @@ class SlowFast(nn.Module):
             x = self.head(x)
         return x
 
-def slowfast_4x16(num_classes, train):
+def slowfast_4x16(num_classes, train, range=(0,255), depth=50, **kwargs):
     resnet = {
-        "depth": 50,
+        "depth": depth,
         "width_per_group": 64,
         "num_groups": 1,
         "trans_func": "bottleneck_transform",
@@ -1369,11 +1397,12 @@ def slowfast_4x16(num_classes, train):
     data = {
         "in_channels": [3,3],
         "num_frames": 32,
-        "crop_sz": 256
+        "crop_sz": 256,
+        "range": range
     }
     mdl = {
         "num_classes": num_classes,
-        "head_act": "softmax",
+        "head_act": None,
         "dropout": 0.5
     }
     return SlowFast(

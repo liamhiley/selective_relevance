@@ -9,7 +9,7 @@ import importlib.util
 # spec = importlib.util.spec_from_file_location("torchexplain", "/home/hileyl/Projects/DAIS-ITA/Remote/torchexplain/torchexplain/__init__.py")
 # torchexplain = importlib.util.module_from_spec(spec)
 # spec.loader.exec_module(torchexplain)
-import torchexplain
+from .. import torchexplain
 
 import pdb
 
@@ -20,6 +20,8 @@ author: https://github.com/kenshohara/3D-ResNets-PyTorch/
 def get_inplanes():
     return [64, 128, 256, 512]
 
+def get_X_inplanes():
+    return [128, 256, 512, 1024]
 
 def conv3x3x3(in_planes, out_planes, stride=1, lib=torchexplain):
     return lib.Conv3d(in_planes,
@@ -41,7 +43,7 @@ def conv1x1x1(in_planes, out_planes, stride=1, lib=torchexplain):
 class BasicBlock(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1, downsample=None, train=False):
+    def __init__(self, in_planes, planes, stride=1, downsample=None, train=False, **kwargs):
         super().__init__()
         if train:
             self.lib = nn
@@ -82,7 +84,7 @@ class BasicBlock(nn.Module):
 class Bottleneck(nn.Module):
     expansion = 4
 
-    def __init__(self, in_planes, planes, stride=1, downsample=None, train=False):
+    def __init__(self, in_planes, planes, stride=1, downsample=None, train=False, **kwargs):
         super().__init__()
         if train:
             self.lib = nn
@@ -124,6 +126,56 @@ class Bottleneck(nn.Module):
 
         return out
 
+class ResNeXtBottleneck(nn.Module):
+    expansion = 2
+
+    def __init__(self, in_planes, planes, cardinality, stride=1,
+                 downsample=None, train=False):
+        super(ResNeXtBottleneck, self).__init__()
+        if train:
+            self.lib = nn
+        else:
+            self.lib = torchexplain
+        mid_planes = cardinality * int(planes / 32)
+        self.conv1 = self.lib.Conv3d(in_planes, mid_planes, kernel_size=1, bias=False)
+        self.bn1 = self.lib.BatchNorm3d(mid_planes)
+        self.conv2 = self.lib.Conv3d(
+            mid_planes,
+            mid_planes,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            groups=cardinality,
+            bias=False)
+        self.bn2 = self.lib.BatchNorm3d(mid_planes)
+        self.conv3 = self.lib.Conv3d(
+            mid_planes, planes * self.expansion, kernel_size=1, bias=False)
+        self.bn3 = self.lib.BatchNorm3d(planes * self.expansion)
+        self.relu = self.lib.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
 
 class ResNet(nn.Module):
 
@@ -131,15 +183,18 @@ class ResNet(nn.Module):
                  block,
                  layers,
                  block_inplanes,
+                 in_planes=None,
                  n_input_channels=3,
                  conv1_t_size=7,
                  conv1_t_stride=1,
                  no_max_pool=False,
                  shortcut_type='B',
+                 cardinality=None,
                  widen_factor=1.0,
                  num_classes=400,
                  range=None,
-                 train=False):
+                 train=False,
+                 **kwargs):
         super().__init__()
         if train:
             self.lib = nn
@@ -148,7 +203,10 @@ class ResNet(nn.Module):
 
         block_inplanes = [int(x * widen_factor) for x in block_inplanes]
 
-        self.in_planes = block_inplanes[0]
+        if not in_planes:
+            self.in_planes = block_inplanes[0]
+        else:
+            self.in_planes = in_planes
         self.no_max_pool = no_max_pool
 
         if train:
@@ -171,24 +229,27 @@ class ResNet(nn.Module):
         self.relu = self.lib.ReLU(inplace=True)
         self.maxpool = self.lib.MaxPool3d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, block_inplanes[0], layers[0],
-                                       shortcut_type,
+                                       shortcut_type, cardinality=cardinality,
                                        train=train)
         self.layer2 = self._make_layer(block,
                                        block_inplanes[1],
                                        layers[1],
                                        shortcut_type,
+                                       cardinality=cardinality,
                                        stride=2,
                                        train=train)
         self.layer3 = self._make_layer(block,
                                        block_inplanes[2],
                                        layers[2],
                                        shortcut_type,
+                                       cardinality=cardinality,
                                        stride=2,
                                        train=train)
         self.layer4 = self._make_layer(block,
                                        block_inplanes[3],
                                        layers[3],
                                        shortcut_type,
+                                       cardinality=cardinality,
                                        stride=2,
                                        train=train)
 
@@ -217,7 +278,7 @@ class ResNet(nn.Module):
 
         return out
 
-    def _make_layer(self, block, planes, blocks, shortcut_type, stride=1, train=False):
+    def _make_layer(self, block, planes, blocks, shortcut_type, cardinality=None, stride=1, train=False):
         downsample = None
         if stride != 1 or self.in_planes != planes * block.expansion:
             if shortcut_type == 'A':
@@ -233,12 +294,13 @@ class ResNet(nn.Module):
         layers.append(
             block(in_planes=self.in_planes,
                   planes=planes,
+                  cardinality=cardinality,
                   stride=stride,
                   downsample=downsample,
                   train=train))
         self.in_planes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(block(self.in_planes, planes,train=train))
+            layers.append(block(self.in_planes, planes, cardinality=cardinality, train=train))
 
         return nn.Sequential(*layers)
 
@@ -263,22 +325,28 @@ class ResNet(nn.Module):
         return x
 
 
-def generate_model(model_depth, **kwargs):
+def generate_model(model_depth, in_planes=None, cardinality=None, **kwargs):
     assert model_depth in [10, 18, 34, 50, 101, 152, 200]
-
-    if model_depth == 10:
-        model = ResNet(BasicBlock, [1, 1, 1, 1], get_inplanes(), **kwargs)
-    elif model_depth == 18:
-        model = ResNet(BasicBlock, [2, 2, 2, 2], get_inplanes(), **kwargs)
-    elif model_depth == 34:
-        model = ResNet(BasicBlock, [3, 4, 6, 3], get_inplanes(), **kwargs)
-    elif model_depth == 50:
-        model = ResNet(Bottleneck, [3, 4, 6, 3], get_inplanes(), **kwargs)
-    elif model_depth == 101:
-        model = ResNet(Bottleneck, [3, 4, 23, 3], get_inplanes(), **kwargs)
-    elif model_depth == 152:
-        model = ResNet(Bottleneck, [3, 8, 36, 3], get_inplanes(), **kwargs)
-    elif model_depth == 200:
-        model = ResNet(Bottleneck, [3, 24, 36, 3], get_inplanes(), **kwargs)
-
+    if cardinality:
+        if model_depth == 50:
+            model = ResNet(ResNeXtBottleneck, [3, 4, 6, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
+        elif model_depth == 101:
+            model = ResNet(ResNeXtBottleneck, [3, 4, 23, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
+        elif model_depth == 152:                          
+            model = ResNet(ResNeXtBottleneck, [3, 8, 36, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
+    else:
+        if model_depth == 10:
+            model = ResNet(BasicBlock, [1, 1, 1, 1], get_inplanes(), **kwargs)
+        elif model_depth == 18:
+            model = ResNet(BasicBlock, [2, 2, 2, 2], get_inplanes(), **kwargs)
+        elif model_depth == 34:
+            model = ResNet(BasicBlock, [3, 4, 6, 3], get_inplanes(), **kwargs)
+        elif model_depth == 50:
+            model = ResNet(Bottleneck, [3, 4, 6, 3], get_inplanes(), **kwargs)
+        elif model_depth == 101:
+            model = ResNet(Bottleneck, [3, 4, 23, 3], get_inplanes(), **kwargs)
+        elif model_depth == 152:
+            model = ResNet(Bottleneck, [3, 8, 36, 3], get_inplanes(), **kwargs)
+        elif model_depth == 200:
+            model = ResNet(Bottleneck, [3, 24, 36, 3], get_inplanes(), **kwargs)
     return model
