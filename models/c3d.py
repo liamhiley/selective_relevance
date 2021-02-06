@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torchexplain
+from .. import torchexplain
 
 
 class C3D(nn.Module):
