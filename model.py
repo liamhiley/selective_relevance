@@ -1,4 +1,12 @@
+import sys
+import os
+
 import torch
+import torch.distributed as dist
+import torch.nn as nn
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 import pickle
 import numpy as np
 import cv2
@@ -23,6 +31,7 @@ model_dict = {
     "resneXt3d_50": partial(resnet3d.generate_model, model_depth=50,cardinality=32,in_planes=64,train=False),
     "resneXt3d_101": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "mars": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
+    "mers": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "resneXt3d_152": partial(resnet3d.generate_model,model_depth=152,cardinality=32,in_planes=64,train=False),
     "slowfast_4x16_R50": partial(slowfast.slowfast_4x16,train=False)
 }
