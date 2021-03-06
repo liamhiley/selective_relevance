@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ def flatten(name, module, flattened_modules):
     else:
         flattened_modules.append((name,module))
 
-def _lrp(samples,mdl,target,target_layers="fc",proportion=False):
+def _lrp(samples,mdl,target,target_layers="fc",proportion=False,keep_output=False):
     output = mdl(samples)
     if target < 0:
         avg = output.mean(dim=0)
@@ -29,6 +30,8 @@ def _lrp(samples,mdl,target,target_layers="fc",proportion=False):
         grad = [torch.autograd.grad(output, sample, out_mask, retain_graph=True)[0] for sample in samples]
     else:
         grad = torch.autograd.grad(output, samples, out_mask, )[0]
+    if keep_output:
+        return grad, target, output
     return grad, target
 
 def _grad_cam(samples,mdl,target,target_layers='avg_pool'):
@@ -101,6 +104,7 @@ class SelectiveRelevanceExplainer:
         self.sig = sig_val
         self.sobel = torch.tensor([[[1,2,1],[2,4,2],[1,2,1]],[[0,0,0],[0,0,0],[0,0,0]],[[-1,-2,-1],[-2,-4,-2],[-1,-2,-1]]])
         self.sobel = self.sobel.reshape((1,1,3,3,3)).to(device)
+        self.sobel = torch.cat([self.sobel]*3,1)
         self.device = device
 
     def get_exp(
@@ -111,6 +115,7 @@ class SelectiveRelevanceExplainer:
             base_method="lrp",
             target_layers="",
             keep_channels=False,
+            keep_output=False,
             **_):
         """
         Backprop relevance onto an input sample for a given model
@@ -132,28 +137,44 @@ class SelectiveRelevanceExplainer:
             samples = [sample.cuda().requires_grad_() for sample in samples]
         else:
             samples = samples.cuda().requires_grad_()
-        grad, target = method_dict[base_method](samples,mdl,target,target_layers)
-        return grad,target
+        result = method_dict[base_method](samples,mdl,target,target_layers,keep_output=keep_output)
+        return result
 
-    def get_exp_from_file(self,path):
+    def get_exp_from_file(self,path,prefix=""):
         """
         Read explanation from video file into torch.Tensor
         Args:
             path (str): Absolute/relative path to explanation video file
         """
-        # Assume path is to video file
-        rdr = cv2.VideoCapture(path)
-        frames = []
-        while True:
-            r, frame = rdr.read()
-            if frame is None:
-                break
-            # convert to grey-scale map
-            if len(frame.shape) > 2:
-                frame = frame.sum(axis=2)
-            frame = torch.from_numpy(frame.astype(np.float))
-            frames.append(frame)
-        expl_vid = torch.stack(frames,0)
+        if path.endswith('.mp4'):
+            rdr = cv2.VideoCapture(path)
+            frames = []
+            while True:
+                r, frame = rdr.read()
+                if frame is None:
+                    break
+                # convert to grey-scale map
+                if len(frame.shape) > 2:
+                    frame = frame.sum(axis=2)
+                frame = torch.from_numpy(frame.astype(np.float))
+                frames.append(frame)
+            expl_vid = torch.stack(frames,0)
+        elif path.endswith('.png'):
+            exp_image = cv2.imread(path)
+            exp_image = torch.from_numpy(exp_image.transpose(2,0,1))
+            return exp_image
+        elif path.endswith('.pt'):
+            expl_vid = torch.load(path)
+        else:
+            # Assume path is to directory of images
+            files = os.listdir(path)
+            frames = []
+            for f in files:
+                fname = f.split('/')[-1]
+                if fname[:len(prefix)] == prefix:
+                    frames.append(f"{path}/{f}")
+            frames = [self.get_exp_from_file(f) for f in frames]
+            expl_vid = torch.stack(frames,0)
         return expl_vid
 
     def selective_relevance(
@@ -173,11 +194,6 @@ class SelectiveRelevanceExplainer:
         """
 
         expl_tensor = expl_tensor.to(self.device)
-        if len(expl_tensor.shape)>3:
-            expl_tensor = expl_tensor.sum(0)
-
-        if expl_tensor.max() != 1:
-            expl_tensor = self.normalise(expl_tensor)
         # if expl_tensor.min() < 0:
         #     expl_tensor = (expl_tensor - -1)/(1 - -1)
 
@@ -185,44 +201,97 @@ class SelectiveRelevanceExplainer:
 
         # sobel operator expects a batch and channel dimension, it also requires padding to fit to
         #     even dimensions but this can be altered.
-        deriv_t = abs(F.conv3d(expl_tensor[None][None].float(), self.sobel.float(), padding=(1, 1, 1))[0, 0, ...])
+        deriv_t = abs(F.conv3d(expl_tensor[None].float(), self.sobel.float(), padding=(1, 1, 1),stride=1)[0, 0, ...])
         # this is the selective process in essentially one line: constructing the mask and applying it
         temp_vis = expl_tensor * (deriv_t > (deriv_t.std() * self.sig)).float()
-        temp_vis = temp_vis[None,...].repeat([3,1,1,1])
         return temp_vis
 
-    def compare_with_flow(self,exp_frames, flow_frames):
+    def compare_tensor_with_baseline(
+        self,
+        baseline_tensor,
+        expl_tensor
+    ):
+        return (baseline_tensor == expl_tensor).float().mean()
+    def compare_frames_with_baseline(
+        self,
+        exp_frames,
+        baseline_frames,
+        agreement_threshold
+    ):
         """
-        For a list of frames of an explanation, and a list of optical flow fields calculated between the
-        input frames of said explanation, calculate the pixelwise overlap (precision) so as to evaluate the explanations bias
+        For a list of frames of an explanation, and a list of frames from some
+        baseline, calculate the pixelwise overlap (precision) so as to evaluate the explanations bias
         towards regions of motion.
 
         Args:
             exp_frames (list of np.ndarrays): A list of frames of an explanation for a 3D CNN
-            flow_frames (list of np.ndarrays): A list of optical flow fields, each calculated as the motion between
-            neighbouring frames at it's corresponding position in the input to the 3D CNN
+            baseline_frames (list of np.ndarrays): A list of frames of a baseline
+            agreement_threshold ((list of) int/float): the value to threshold both inputs
+            at before converting them to masks to compare
         Returns:
             The percentage overlap between positive valued pixels in frames of both lists.
         """
         true_pos = 0
         false_pos = 0
-        for ex, fl in zip(exp_frames,flow_frames):
-            if ex.shape != fl.shape:
-                ex = cv2.resize(ex,fl.shape[1::-1])
-            ex[ex < 10] = 0
-            fl_mask = cv2.cvtColor(fl,cv2.COLOR_BGR2GRAY)
-            fl_mask = fl_mask > fl_mask.std()
+        if isinstance(agreement_threshold, (list,tuple)):
+            e_thr, b_thr = agreement_threshold
+        else:
+            e_thr = b_thr = agreement_threshold
+        for ex, bl in zip(exp_frames,baseline_frames):
+            if ex.shape != bl.shape:
+                ex = cv2.resize(ex,bl.shape[1::-1])
+            ex = ex > e_thr
+            bl_mask = cv2.cvtColor(bl,cv2.COLOR_BGR2GRAY)
+            bl_mask = bl_mask > b_thr
 
-            ex = ex > 0
-
-            true_pos += (ex & fl_mask).sum()
-            false_pos += (ex & (~fl_mask)).sum()
+            true_pos += (ex & bl_mask).sum()
+            false_pos += (ex & (~bl_mask)).sum()
 
         if true_pos or false_pos:
-            precision = true_pos / (true_pos+false_pos)
+            agreement = true_pos / (true_pos+false_pos)
         else:
-            precision = 0
-        return precision
+            agreement = 0
+        return agreement
+
+    def normalise_by_input(
+        self,
+        exp,
+        inp,
+        agg=None
+    ):
+        """
+        Returns the ratio of energy of the explanation to that of the input
+        This can be useful in N-stream models for example, to observe the flow
+        of relevance.
+        Args:
+            exp (list of 3D arrays): list of frames of an explanation for a
+            video.
+            inp (list of 3D arrays): list of frames of the input that caused
+            the explanation.
+            agg (function): an optional function to apply to the normalised list
+            (e.g. sum)
+        Returns:
+            norm_exp (list of 3D arrays): list of frames of an explanation
+            normalised by their corresponding frames of input.
+            OR
+            metric: the result of passing norm_exp through agg.
+        """
+        if len(exp)!=len(inp):
+            inp = inp[:len(exp)]
+        norm_exp = []
+        for e,i in zip(exp,inp):
+            if len(i.shape) > 2:
+                i = i.sum(2)
+            if len(e.shape) > 2:
+                e = e.sum(2)
+            norm_exp.append(e/i)
+        if agg:
+            metric = norm_exp
+            while not isinstance(metric,(float,int)):
+                metric = agg(metric)
+            return metric
+        else:
+            return norm_exp
 
     def compile_batches(self, batches, lbls, streams=1, **_):
         clip = []
@@ -279,7 +348,10 @@ class SelectiveRelevanceExplainer:
                     frame = frame[...,(2,1,0)]
                 frame = (frame*255).astype(np.uint8)
                 if inp:
-                    in_frame = inp[batch_idx*batch_sz+f_idx]
+                    frame_idx = batch_idx*batch_sz+f_idx
+                    if frame_idx >= len(inp):
+                        break
+                    in_frame = inp[frame_idx]
                     frame = cv2.resize(frame,(in_frame.shape[1],in_frame.shape[0]))
                     frame = cv2.addWeighted(frame,0.5,in_frame,0.5,0)
                 expl.append(frame)
