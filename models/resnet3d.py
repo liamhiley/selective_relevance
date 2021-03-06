@@ -12,6 +12,10 @@ import importlib.util
 from .. import torchexplain
 
 import pdb
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+save_path ="/home/hileyl/Projects/sel_rel/sR_results/downsample_resizing/kinetics400/trilinear/test/"
 
 """
 author: https://github.com/kenshohara/3D-ResNets-PyTorch/
@@ -158,6 +162,8 @@ class ResNeXtBottleneck(nn.Module):
     def forward(self, x):
         residual = x
 
+        # if x.shape == torch.Size([2,512,16,32,32]):
+        #     pdb.set_trace()
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -172,7 +178,10 @@ class ResNeXtBottleneck(nn.Module):
         if self.downsample is not None:
             residual = self.downsample(x)
 
-        out += residual
+        if self.training:
+            out += residual
+        else:
+            out = self.lib.add(out,residual)
         out = self.relu(out)
 
         return out
@@ -313,7 +322,7 @@ class ResNet(nn.Module):
 
         x = self.layer1(x)
         x = self.layer2(x)
-        x = self.layer3(x)
+        x = self.layer3(x) # HERE
         x = self.layer4(x)
 
 
@@ -332,7 +341,7 @@ def generate_model(model_depth, in_planes=None, cardinality=None, **kwargs):
             model = ResNet(ResNeXtBottleneck, [3, 4, 6, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
         elif model_depth == 101:
             model = ResNet(ResNeXtBottleneck, [3, 4, 23, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
-        elif model_depth == 152:                          
+        elif model_depth == 152:
             model = ResNet(ResNeXtBottleneck, [3, 8, 36, 3], get_X_inplanes(), in_planes=in_planes, cardinality=cardinality, **kwargs)
     else:
         if model_depth == 10:

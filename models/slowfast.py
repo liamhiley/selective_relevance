@@ -1363,7 +1363,7 @@ class SlowFast(nn.Module):
             x = self.head(x)
         return x
 
-def slowfast_4x16(num_classes, train, range=(0,255), depth=50, **kwargs):
+def slowfast_4x16(num_classes, train, range=(0,255), depth=50, num_frames=32, **kwargs):
     resnet = {
         "depth": depth,
         "width_per_group": 64,
@@ -1396,7 +1396,7 @@ def slowfast_4x16(num_classes, train, range=(0,255), depth=50, **kwargs):
     }
     data = {
         "in_channels": [3,3],
-        "num_frames": 32,
+        "num_frames": num_frames,
         "crop_sz": 256,
         "range": range
     }

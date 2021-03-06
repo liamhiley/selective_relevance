@@ -1,11 +1,110 @@
 import os
 import torch
+from torch.utils.data import Dataset, DataLoader
+import math
 import numpy as np
 import cv2
-import imageio
+import random
+# import imageio
 from . import robust_pca
 import pdb
 
+def get_video_list(
+        dataset_path,
+        num_vids,
+        cache_file="",
+        class_list=[],
+        sampling_method="uniform",
+        extension='.mp4',
+        **kwargs
+):
+    """
+    Randomly generate a list of videos for a given dataset.
+    Args:
+        dataset_path (str): the absolute path to the dataset folder on your
+            system.
+        num_vids (int): the desired length of the return list
+        cache_file (str, default:""): a list of video names saved to disk,
+            these are prepended to the list before generating
+        class_list (list of str, default:[]): if your dataset folder has
+            subfolders that aren't classes, then provide a list of class names with this arg.
+        sampling_method (str, default="uniform"): The method by which the
+            number of samples for each class is calculated. Viable
+            options are uniform/proportional
+    Returns:
+        vid_list (list of str): list of absolute file names to read videos from when generating results.
+    """
+    vid_list = []
+    if cache_file:
+        # prepend cache list to list of samples
+        cache_list = open(cache_file,"r").readlines()
+        cache_list = [c[:-1] for c in cache_list]
+        if cache_list[0]:
+            vid_list += cache_list
+    if not class_list:
+        # default class_list
+        class_list = os.listdir(dataset_path)
+    # get abs paths for class folders
+    class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
+    # remainder of videos to be sampled randomly
+    if num_vids == len(vid_list):
+        return vid_list
+    dataset_size = 0
+    sample_list = []
+    for c in class_list:
+        samples = os.listdir(c)
+        # get absolute path of all video files in class folder
+        samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
+        num_samples = len(samples)
+        sample_list.append(samples)
+        dataset_size += num_samples
+    if sampling_method == "proportional":
+        # get weighted number of samples for each class, according to their
+        # percentage size within the entire dataset
+        # for cl, samples in zip(class_list,sample_list):
+        #     pdb.set_trace()
+        #     print(cl,samples)
+        weights = []
+        for samples in sample_list:
+            weight = round(
+                (num_vids-len(vid_list))*len(samples)/dataset_size
+            )
+            weights.append(weight)
+    else:
+        weights = [1]*len(class_list)
+
+    sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(vid_list)))
+
+    for c in sample_key:
+        sample = random.choice(sample_list[c])
+        while sample in vid_list:
+            sample = random.choice(sample_list[c])
+        vid_list += [sample]
+    return vid_list
+
+class VideoDataset(Dataset):
+    def __init__(self, dataset_path, class_list, shape=None, mean=[0,0,0], std=[1,1,1],
+                 sample_len=16, streams=1, sample_rate=1, extension='.mp4', **kwargs):
+        self.dataset_path = dataset_path
+        self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, **kwargs)
+        self.shape = shape
+        self.mean = mean
+        self.std = std
+        self.sample_len = sample_len
+        self.streams = streams
+        self.sample_rate = sample_rate
+        self.extension = extension
+        self.kwargs = kwargs
+
+    def __len__(self):
+        return len(self.vid_list)
+
+    def __getitem__(self, idx):
+        return get_input(f"{self.vid_list[idx]}", self.shape, self.mean, self.std,
+                  self.sample_len, self.streams, self.sample_rate,
+                  **self.kwargs), self.vid_list[idx]
+
+>>>>>>> ed58bcbbce48ac02b6b1540c4372c5257ad1de91
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, **kwargs):
     """
     Read in video from file and store in a torch.Tensor.
@@ -26,12 +125,12 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         frames (list of (np.ndarray)): A list of frames
     """
     rdr = cv2.VideoCapture(path)
-    offsets = int(rdr.get(cv2.CAP_PROP_FRAME_COUNT)//sample_len)
+    offsets = math.ceil(rdr.get(cv2.CAP_PROP_FRAME_COUNT)/sample_len)
     if shape is None:
         shape = (int(rdr.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(rdr.get(cv2.CAP_PROP_FRAME_WIDTH)))
     else:
         shape = tuple(shape)
-    vid = torch.zeros((offsets,3,sample_len) + shape).requires_grad_()
+    vid = torch.zeros((offsets,3,sample_len) + shape)
     frames = []
     for o in range(offsets):
         f_idx = 0
@@ -59,7 +158,8 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         return False, False
     # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
     if streams > 1:
-        assert len(sample_rate) == streams
+        if isinstance(sample_rate,int):
+            sample_rate = [sample_rate]*streams
         stream_copies = [vid.clone()] * streams
         # resample each copy of the input at it's respective sample rate
         for s in range(streams):
@@ -74,18 +174,18 @@ def show_image(img,name):
     cv2.waitKey(0)
     # cv2.destroyAllWindows()
 
-def write_video(path,frames,**kwargs):
-    """
-    Write to an .mp4 file from a list of frames
+# def write_video(path,frames,**kwargs):
+#     """
+#     Write to an .mp4 file from a list of frames
 
-    Args:
-        path (str): the path to the video file.
-        frames (list of np.ndarrays): list of frames to write to the video
-    """
-    with imageio.get_writer(path, mode='I', **kargs) as writer:
-        for frame in frames:
-            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-            writer.append_data(frame)
+#     Args:
+#         path (str): the path to the video file.
+#         frames (list of np.ndarrays): list of frames to write to the video
+#     """
+    # with imageio.get_writer(path, mode='I', **kargs) as writer:
+    #     for frame in frames:
+    #         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+    #         writer.append_data(frame)
 
 def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sample_rate=1, **kwargs):
     """
@@ -136,7 +236,7 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
             f2 = cv2.cvtColor(frames[f_idx],cv2.COLOR_BGR2GRAY)
             flow.append(cv2.calcOpticalFlowFarneback(f1,f2,None,0.5,3,15,3,5,1.2,0))
         if motion_compensation:
-            flow, metric = remove_cam_motion(frames,flow,motion_compensation,**kwargs)
+            flow, metric = remove_cam_motion(flow,motion_compensation,**kwargs)
         for i,cart in enumerate(flow):
             mag, ang = cv2.cartToPolar(cart[...,0], cart[...,1])
             hsv[...,0] = ang*180/np.pi/2
@@ -148,7 +248,6 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
     return flow
 
 def remove_cam_motion(
-        frames,
         flow,
         thresh=1,
         retain=False,
@@ -198,7 +297,6 @@ def remove_cam_motion(
     # Since we only want to find the ratio A_c / A = USV'/US*V'
     # We can instead compute sum(S*)/sum(S), therefore describing the amount of energy in A accounted for by A_c
     metric = S[:1].sum() / S.sum()
-    print(f"Metric is {metric}")
     if metric < thresh:
         # We assume this is camera motion
         S_star = torch.cat((S[:1],torch.zeros_like(S[1:])))
