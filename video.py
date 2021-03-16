@@ -83,8 +83,20 @@ def get_video_list(
     return vid_list
 
 class VideoDataset(Dataset):
-    def __init__(self, dataset_path, class_list, shape=None, mean=[0,0,0], std=[1,1,1],
-                 sample_len=16, streams=1, sample_rate=1, extension='.mp4', **kwargs):
+    def __init__(
+        self,
+        dataset_path,
+        class_list,
+        shape=None,
+        mean=[0,0,0],
+        std=[1,1,1],
+        sample_len=16,
+        streams=1,
+        sample_rate=1,
+        extension='.mp4',
+        device='cpu',
+        **kwargs
+    ):
         self.dataset_path = dataset_path
         self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, **kwargs)
         self.shape = shape
@@ -103,6 +115,62 @@ class VideoDataset(Dataset):
         return get_input(f"{self.vid_list[idx]}", self.shape, self.mean, self.std,
                   self.sample_len, self.streams, self.sample_rate,
                   **self.kwargs), self.vid_list[idx]
+
+class FlowDataset(VideoDataset):
+    def __init__(
+        self,
+        dataset_path,
+        class_list,
+        shape=None,
+        mean=[0,0,0],
+        std=[1,1,1],
+        sample_len=16,
+        streams=1,
+        sample_rate=1,
+        extension='.mp4',
+        motion_compensation = False,
+        device='cpu',
+        **kwargs
+    ):
+        super().__init__(
+            dataset_path,
+            class_list,
+            shape,
+            mean,
+            std,
+            sample_len,
+            streams,
+            sample_rate,
+            extension,
+            **kwargs
+        )
+        self.motion_compensation = motion_compensation
+
+    def __len__(self):
+        return len(self.vid_list)
+
+    def __getitem__(self,idx):
+        vid, frames = get_input(
+            f"{self.vid_list[idx]}",
+            self.shape,
+            self.mean,
+            self.std,
+            self.sample_len,
+            self.streams,
+            self.sample_rate,
+            **self.kwargs
+        )
+        shape = vid.shape
+        del vid
+        flow_frames =  generate_optical_flow(frames,self.motion_compensation,self.streams,self.sample_rate)
+        flow = [torch.from_numpy(f.transpose(2,0,1)) for f in flow_frames]
+        pad_len = shape[0]*shape[2] - len(flow)
+        flow = torch.stack(flow+[torch.zeros_like(flow[-1])]*pad_len).reshape(shape).float()
+        for c in range(3):
+            flow[:,c,...] -= self.mean[c]
+            flow[:,c,...] /= self.std[c]
+        return (flow, flow_frames), self.vid_list[idx]
+
 
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, **kwargs):
     """
@@ -241,6 +309,8 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
             hsv[...,0] = ang*180/np.pi/2
             hsv[...,2] = cv2.normalize(mag,None,0,255,cv2.NORM_MINMAX)
             flow[i] = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+            flow[i] = cv2.cvtColor(flow[i], cv2.COLOR_BGR2GRAY)
+            flow[i] = cv2.cvtColor(flow[i], cv2.COLOR_GRAY2BGR)
             f1 = f2
     if motion_compensation:
         return flow, metric
