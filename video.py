@@ -104,7 +104,6 @@ class VideoDataset(Dataset):
                   self.sample_len, self.streams, self.sample_rate,
                   **self.kwargs), self.vid_list[idx]
 
->>>>>>> ed58bcbbce48ac02b6b1540c4372c5257ad1de91
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, **kwargs):
     """
     Read in video from file and store in a torch.Tensor.
