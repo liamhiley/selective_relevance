@@ -181,7 +181,8 @@ class ResNeXtBottleneck(nn.Module):
         if self.training:
             out += residual
         else:
-            out = self.lib.add(out,residual)
+            out += residual
+            # out = self.lib.add(out,residual)
         out = self.relu(out)
 
         return out
