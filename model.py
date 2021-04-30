@@ -37,6 +37,7 @@ model_dict = {
 }
 
 def get_model(arch, num_classes,weights_path="", **kwargs):
+
     if "slowfast" in arch["name"]:
         arch_name = f"{arch['name']}_{arch['frame_sampling']}_{arch['base_net']}"
     else:
@@ -46,7 +47,7 @@ def get_model(arch, num_classes,weights_path="", **kwargs):
         model = load_model(model,weights_path,**kwargs)
     return model
 
-def load_model(model,weights_path,is_caffe=False, map_loc="cpu", is_parallel=False, **kwargs):
+def load_model(model,weights_path,is_caffe=False, map_loc="cpu", is_parallel=False, freeze=None, **kwargs):
     if "cuda" in map_loc:
         model = model.cuda()
     if is_parallel:
@@ -63,10 +64,19 @@ def load_model(model,weights_path,is_caffe=False, map_loc="cpu", is_parallel=Fal
             weights = dict(weights["state_dict"])
         for k, v in weights.items():
             if "module" in k and not is_parallel:
-                nweights[k[7:]] = v.clone().detach()
+                k = k[7:]
             elif "module" not in k and is_parallel:
-                nweights["module."+k] = v.clone().detach()
-            else:
-                nweights[k] = v.clone().detach()
+                k = "module."+k
+            if 'fc' in k:
+                fc_weight = model.state_dict()[k]
+                if fc_weight.shape != v.shape:
+                    nweights[k] = fc_weight
+                    continue
+            nweights[k] = v.clone().detach()
         model.load_state_dict(nweights,strict=True)
+    if not (freeze is None):
+        layers = list(model.children())[:freeze]
+        for l in layers:
+            for p in l.parameters():
+                p.requires_grad = False
     return model
