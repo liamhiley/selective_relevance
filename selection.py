@@ -180,6 +180,7 @@ class SelectiveRelevanceExplainer:
     def selective_relevance(
             self,
             expl_tensor,
+            relative=False,
             **_
     ):
         """
@@ -189,6 +190,7 @@ class SelectiveRelevanceExplainer:
             expl_tensor (torch.Tensor): Grey-scale magnitude representation of relevance for an input video. Each pixels value should be the
                 amount of relevance at that position. Overlaying the explanation on the input, or putting it through some colour map will cause
                 incorrect results.
+            relative (bool,default: False): if this is true, scale the derivative by the explanation to get proportional rates of change.
         Returns:
             sel_expl (list of numpy.ndarrays): Explanation tensor post Selective process.
         """
@@ -200,10 +202,15 @@ class SelectiveRelevanceExplainer:
 
 
         # sobel operator expects a batch and channel dimension, it also requires padding to fit to
-        #     even dimensions but this can be altered.
+           # even dimensions but this can be altered.
         deriv_t = abs(F.conv3d(expl_tensor[None].float(), self.sobel.float(), padding=(1, 1, 1),stride=1)[0, 0, ...])
+        # deriv_t = (deriv_t - deriv_t.min())/(deriv_t.max() - deriv_t.min())
+        deriv_t = (deriv_t > (deriv_t.std()*self.sig)).float()
+        temp_vis = expl_tensor * deriv_t
+
         # this is the selective process in essentially one line: constructing the mask and applying it
-        temp_vis = expl_tensor * (deriv_t > (deriv_t.std() * self.sig)).float()
+        # temp_vis = expl_tensor * (deriv_t > (deriv_t.std() * self.sig)).float()
+        # temp_vis = expl_tensor * expl_tensor.var((0,1))
         return temp_vis
 
     def compare_tensor_with_baseline(
