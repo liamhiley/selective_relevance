@@ -8,14 +8,27 @@ import random
 # import imageio
 from . import robust_pca
 import pdb
+from tqdm import tqdm
+
+supported_imgs = [
+    '.png',
+    '.jpg'
+]
+
+supported_vids = [
+    '.mp4',
+    '.avi'
+]
 
 def get_video_list(
         dataset_path,
-        num_vids,
+        num_vids=-1,
         cache_file="",
         class_list=[],
         sampling_method="uniform",
         extension='.mp4',
+        sample_len=16,
+        train=False,
         **kwargs
 ):
     """
@@ -39,7 +52,7 @@ def get_video_list(
         # prepend cache list to list of samples
         cache_list = open(cache_file,"r").readlines()
         cache_list = [c[:-1] for c in cache_list]
-        if cache_list[0]:
+        if cache_list:
             vid_list += cache_list
     if not class_list:
         # default class_list
@@ -47,6 +60,9 @@ def get_video_list(
     # get abs paths for class folders
     class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
     # remainder of videos to be sampled randomly
+    if isinstance(eval(vid_list[0]),tuple):
+        if num_vids == len(set([eval(v)[0] for v in vid_list])):
+            return vid_list
     if num_vids == len(vid_list):
         return vid_list
     dataset_size = 0
@@ -54,10 +70,24 @@ def get_video_list(
     for c in class_list:
         samples = os.listdir(c)
         # get absolute path of all video files in class folder
-        samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
+        if extension in supported_vids:
+            samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
+        else:
+            new_samples = []
+            for s in samples:
+                abs_path = os.path.join(c,s)
+                if os.path.isdir(abs_path):
+                    for f in os.listdir(abs_path):
+                        if f.endswith(extension):
+                            new_samples.append(abs_path)
+                            break
+            samples = new_samples
+
         num_samples = len(samples)
         sample_list.append(samples)
         dataset_size += num_samples
+    if num_vids == -1:
+        num_vids = dataset_size
     if sampling_method == "proportional":
         # get weighted number of samples for each class, according to their
         # percentage size within the entire dataset
@@ -73,13 +103,30 @@ def get_video_list(
     else:
         weights = [1]*len(class_list)
 
-    sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(vid_list)))
+    if num_vids < dataset_size:
+        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(vid_list)))
 
-    for c in sample_key:
-        sample = random.choice(sample_list[c])
-        while sample in vid_list:
+        for c in sample_key:
             sample = random.choice(sample_list[c])
-        vid_list += [sample]
+            while sample in vid_list:
+                sample = random.choice(sample_list[c])
+            vid_list += [sample]
+    else:
+        vid_list = [s for c in sample_list for s in c]
+    if train:
+        n_vid_list = []
+        for v in tqdm(vid_list):
+            if extension in supported_imgs:
+                len_vid = len(os.listdir(v))
+            elif extension in supported_vids:
+                len_vid = cv2.VideoCapture(v).get(cv2.CAP_PROP_FRAME_COUNT)
+            offsets = math.ceil(len_vid / sample_len)
+            for f_idx in range(0,len_vid,sample_len):
+                n_vid_list.append((v,f_idx,f_idx+sample_len))
+        vid_list = n_vid_list
+    with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
+        for v in vid_list:
+            f.write(str(v)+'\n')
     return vid_list
 
 class VideoDataset(Dataset):
@@ -98,7 +145,8 @@ class VideoDataset(Dataset):
         **kwargs
     ):
         self.dataset_path = dataset_path
-        self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, **kwargs)
+        self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
+        self.classes = class_list
         self.shape = shape
         self.mean = mean
         self.std = std
@@ -112,9 +160,33 @@ class VideoDataset(Dataset):
         return len(self.vid_list)
 
     def __getitem__(self, idx):
-        return get_input(f"{self.vid_list[idx]}", self.shape, self.mean, self.std,
-                  self.sample_len, self.streams, self.sample_rate,
-                  **self.kwargs), self.vid_list[idx]
+        start, stop = (0,-1)
+        path = self.vid_list[idx]
+        if isinstance(path,str):
+            path = eval(path)
+        if isinstance(path,tuple):
+            path, start, stop = path
+        activity = self.classes.index(path.split('/')[-2])
+        if self.extension in supported_vids:
+            return get_input(f"{path}", self.shape, self.mean, self.std,
+                  self.sample_len, self.streams, self.sample_rate, start, stop,
+                  **self.kwargs), (activity, path)
+        elif self.extension in supported_imgs:
+            return get_input_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
+                  sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate,
+                  start=start, stop=stop, **self.kwargs), (activity, path)
+
+    def collate(self,batch):
+        inp, labels = list(zip(*batch))
+        vid, frames = list(zip(*inp))
+        gts, path = list(zip(*labels))
+        n_gts = []
+        for v, g in zip(vid,gts):
+            n_gts += [g]*v.shape[0]
+        vid = torch.cat(vid,dim=0)
+        n_gts = torch.tensor(n_gts)
+        return (vid, frames), (n_gts, path)
+
 
 class FlowDataset(VideoDataset):
     def __init__(
@@ -150,8 +222,14 @@ class FlowDataset(VideoDataset):
         return len(self.vid_list)
 
     def __getitem__(self,idx):
+        start, stop = (0,-1)
+        path = self.vid_list[idx]
+        if isinstance(path,str):
+            path = eval(path)
+        if isinstance(path,tuple):
+            path, start, stop = path
         vid, frames = get_input(
-            f"{self.vid_list[idx]}",
+            path,
             self.shape,
             self.mean,
             self.std,
@@ -172,7 +250,7 @@ class FlowDataset(VideoDataset):
         return (flow, flow_frames), self.vid_list[idx]
 
 
-def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, **kwargs):
+def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
     """
     Read in video from file and store in a torch.Tensor.
 
@@ -202,11 +280,82 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
     for o in range(offsets):
         f_idx = 0
         while True:
+            if f_idx < start or f_idx > stop:
+                f_idx += 1
+                continue
             if f_idx > sample_len-1:
                 break
             r, frame = rdr.read()
             if not r:
                 break
+            frame = cv2.resize(frame,(shape[1],shape[0]))
+            frames.append(frame)
+            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+            frame = frame.transpose(2,0,1)
+            frame = torch.from_numpy(frame).float()
+            # if len(frames):
+            #     print((frame==frames[-1]).all())
+            for c in range(3):
+                frame[c,...] -= mean[c]
+                frame[c,...] /= std[c]
+            vid[o,:,f_idx,:,:] = frame
+            f_idx += 1
+        if f_idx < sample_len:
+            vid[o,:,f_idx:sample_len,:,:] = vid[o,:,f_idx:f_idx+1,:,:]
+    if not len(frames):
+        return False, False
+    # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
+    if streams > 1:
+        if isinstance(sample_rate,int):
+            sample_rate = [sample_rate]*streams
+        stream_copies = [vid.clone()] * streams
+        # resample each copy of the input at it's respective sample rate
+        for s in range(streams):
+            stream_copies[s] = stream_copies[s][:,:,::sample_rate[s],...]
+        vid = stream_copies
+    else:
+        vid = vid[:,:,::sample_rate,...]
+    return vid,frames
+
+def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, **kwargs):
+    """
+    Read images from directory and compile into 4D tensor
+    Args:
+        path (str): the path to the frame directory.
+        shape (tuple/list of int,optional): the desired shape to resize each frame to.
+        mean (tuple/list of int,optional): channel-wise mean to center the channels of each frame around, in RGB format.
+        std (tuple/list of int,optional): channel-wise standard deviation to scale the channels of each frame by, in RGB format.
+        sample_len (int,optional): the length in frames of each sample expected by the model, the video will be split
+            into batches accordingly.
+        streams (int, default: 1): the number of streams the target model will have, we repeat the input accordingly so
+            that each stream has a copy of the input.
+        sample_rate (int/tuple/list, default: 1): frames for the video will be sampled at a rate of 1/sample_rate, if multiple
+            streams, then a sample_rate must be provided for each of them
+    Returns:
+        vid (torch.Tensor): The processed video with BxCxTxHxW shape.
+        frames (list of (np.ndarray)): A list of frames
+    """
+    frame_files = os.listdir(path)
+    frame_files = [f"{path}/{f}" for f in frame_files if f.endswith(extension)]
+    frame_files = sorted(frame_files)
+
+    if stop:
+        frame_files = frame_files[start:stop]
+    offsets = math.ceil(len(frame_files)/sample_len)
+    if shape is None:
+        first = cv2.imread(frame_files[0])
+        shape = first.shape[:-1]
+    else:
+        shape = tuple(shape)
+    vid = torch.zeros((offsets,3,sample_len) + shape)
+    frame_files = iter(frame_files)
+    frames = []
+    for o in range(offsets):
+        f_idx = 0
+        for frame in frame_files:
+            if f_idx > sample_len-1:
+                break
+            frame = cv2.imread(frame)
             frame = cv2.resize(frame,(shape[1],shape[0]))
             frames.append(frame)
             frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
