@@ -63,3 +63,10 @@ class ExplainAudioVideoMidFusion(nn.Module):
 
         x = torch.cat((x_audio, x_video), dim=1)
         return self.classifier(self.lib.ReLU()(x))
+
+def generate_model(
+    num_classes,
+    train=False,
+    device
+):
+    return ExplainAudioVideoMidFusion(num_classes,train,device)
