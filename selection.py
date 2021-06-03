@@ -29,7 +29,7 @@ def _lrp(samples,mdl,target,target_layers="fc",proportion=False,keep_output=Fals
     if isinstance(samples,(list,tuple)):
         grad = [torch.autograd.grad(output, sample, out_mask, retain_graph=True)[0] for sample in samples]
     else:
-        grad = torch.autograd.grad(output, samples, out_mask, )[0]
+        grad = torch.autograd.grad(output, samples, out_mask, retain_graph=False)[0]
     if keep_output:
         return grad, target, output
     return grad, target
@@ -96,7 +96,7 @@ class SelectiveRelevanceExplainer:
             sig*rel_grad.std() are considered to be relevant due to motion.
         device (str, default:cpu): torch device to move model and samples to
     """
-    def __init__(self, sig_val, device, **_):
+    def __init__(self, sig_val, device, channels=3, **kwargs):
         """
         Args:
             sig_val (int): See Attributes
@@ -104,7 +104,10 @@ class SelectiveRelevanceExplainer:
         self.sig = sig_val
         self.sobel = torch.tensor([[[1,2,1],[2,4,2],[1,2,1]],[[0,0,0],[0,0,0],[0,0,0]],[[-1,-2,-1],[-2,-4,-2],[-1,-2,-1]]])
         self.sobel = self.sobel.reshape((1,1,3,3,3)).to(device)
-        self.sobel = torch.cat([self.sobel]*3,1)
+        if channels == 2:
+            self.sobel = torch.cat([self.sobel]*2,1)
+        else:
+            self.sobel = torch.cat([self.sobel]*3,1)
         self.device = device
 
     def get_exp(
@@ -328,7 +331,8 @@ class SelectiveRelevanceExplainer:
             self,
             expl_tensor,
             cmap=None,
-            inp=None
+            inp=None,
+            channels=3
     ):
         # Args:
         #     expl_tensor (torch.Tensor): Grey-scale magnitude representation of relevance for an input video. Each pixels value should be the
@@ -346,6 +350,12 @@ class SelectiveRelevanceExplainer:
             expl_tensor = expl_tensor.sum(1)
         expl_tensor = self.normalise(expl_tensor)
 
+        # temp relevance booster for clarity
+        rel_mask = expl_tensor!=0
+        expl_tensor[rel_mask] += np.minimum(1-expl_tensor[rel_mask],0.05)
+        #
+
+
         for batch_idx, batch in enumerate(expl_tensor):
             batch_sz = batch.shape[0]
             for f_idx in range(batch.shape[0]):
@@ -359,7 +369,11 @@ class SelectiveRelevanceExplainer:
                     if frame_idx >= len(inp):
                         break
                     in_frame = inp[frame_idx]
+
+                    in_frame = cv2.cvtColor(in_frame,cv2.COLOR_BGR2GRAY)
+                    in_frame = cv2.cvtColor(in_frame,cv2.COLOR_GRAY2BGR)
+
                     frame = cv2.resize(frame,(in_frame.shape[1],in_frame.shape[0]))
-                    frame = cv2.addWeighted(frame,0.5,in_frame,0.5,0)
+                    frame = cv2.addWeighted(frame,0.7,in_frame,0.3,20)
                 expl.append(frame)
         return expl

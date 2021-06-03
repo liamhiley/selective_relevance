@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import math
 import numpy as np
+import imageio
 import cv2
 import random
 # import imageio
@@ -202,6 +203,7 @@ class FlowDataset(VideoDataset):
         extension='.mp4',
         motion_compensation = False,
         device='cpu',
+        channels=3,
         **kwargs
     ):
         super().__init__(
@@ -217,6 +219,7 @@ class FlowDataset(VideoDataset):
             **kwargs
         )
         self.motion_compensation = motion_compensation
+        self.channels=channels
 
     def __len__(self):
         return len(self.vid_list)
@@ -228,27 +231,36 @@ class FlowDataset(VideoDataset):
             path = eval(path)
         if isinstance(path,tuple):
             path, start, stop = path
-        vid, frames = get_input(
-            path,
-            self.shape,
-            self.mean,
-            self.std,
-            self.sample_len,
-            self.streams,
-            self.sample_rate,
-            **self.kwargs
-        )
-        shape = vid.shape
-        del vid
-        flow_frames =  generate_optical_flow(frames,self.motion_compensation,self.streams,self.sample_rate)
-        flow = [torch.from_numpy(f.transpose(2,0,1)) for f in flow_frames]
-        pad_len = shape[0]*shape[2] - len(flow)
-        flow = torch.stack(flow+[torch.zeros_like(flow[-1])]*pad_len).reshape(shape).float()
-        for c in range(3):
-            flow[:,c,...] -= self.mean[c]
-            flow[:,c,...] /= self.std[c]
-        return (flow, flow_frames), self.vid_list[idx]
+        activity = self.classes.index(path.split('/')[-2])
+        if self.extension in supported_vids:
+            vid, frames = get_input(f"{path}", self.shape, self.mean, self.std,
+                  self.sample_len, self.streams, self.sample_rate, start, stop,
+                  **self.kwargs)
+            shape = vid.shape
+            del vid
+            flow_frames =  generate_optical_flow(frames,self.motion_compensation,self.streams,self.sample_rate,channels=self.channels)
+            flow = [torch.from_numpy(f.transpose(2,0,1)) for f in flow_frames]
+            pad_len = shape[0]*shape[2] - len(flow)
+            flow = torch.stack(flow+[torch.zeros_like(flow[-1])]*pad_len).reshape(shape).float()
+            for c in range(3):
+                flow[:,c,...] -= self.mean[c]
+                flow[:,c,...] /= self.std[c]
+        elif self.extension in supported_imgs:
+            flow, flow_frames = get_flow_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
+                  sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate,
+                  start=start, stop=stop, channels=self.channels, **self.kwargs)
+        return (flow, flow_frames), (activity, path)
 
+    def collate(self,batch):
+        inp, labels = list(zip(*batch))
+        vid, frames = list(zip(*inp))
+        gts, path = list(zip(*labels))
+        n_gts = []
+        for v, g in zip(vid,gts):
+            n_gts += [g]*v.shape[0]
+        vid = torch.cat(vid,dim=0)
+        n_gts = torch.tensor(n_gts)
+        return (vid, frames), (n_gts, path)
 
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
     """
@@ -385,6 +397,94 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
         vid = vid[:,:,::sample_rate,...]
     return vid,frames
 
+def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, channels=3, **kwargs):
+    """
+    Read images from directory and compile into 4D tensor
+    Args:
+        path (str): the path to the frame directory.
+        shape (tuple/list of int,optional): the desired shape to resize each frame to.
+        mean (tuple/list of int,optional): channel-wise mean to center the channels of each frame around, in RGB format.
+        std (tuple/list of int,optional): channel-wise standard deviation to scale the channels of each frame by, in RGB format.
+        sample_len (int,optional): the length in frames of each sample expected by the model, the video will be split
+            into batches accordingly.
+        streams (int, default: 1): the number of streams the target model will have, we repeat the input accordingly so
+            that each stream has a copy of the input.
+        sample_rate (int/tuple/list, default: 1): frames for the video will be sampled at a rate of 1/sample_rate, if multiple
+            streams, then a sample_rate must be provided for each of them
+    Returns:
+        vid (torch.Tensor): The processed video with BxCxTxHxW shape.
+        frames (list of (np.ndarray)): A list of frames
+    """
+    frame_files = os.listdir(path)
+    frame_files = [f"{path}/{f}" for f in frame_files if f.endswith(extension)]
+    x_files = [f for f in frame_files if 'x' in f]
+    y_files = [f for f in frame_files if 'y' in f]
+    x_files = sorted(x_files)
+    y_files = sorted(y_files)
+
+    if stop:
+        frame_files = frame_files[start:stop]
+    offsets = math.ceil(len(frame_files)/sample_len)
+    if shape is None:
+        first = cv2.imread(frame_files[0])
+        shape = first.shape[:-1]
+    else:
+        shape = tuple(shape)
+    flow = torch.zeros((offsets,channels,sample_len) + shape)
+    flow_frames = []
+    for o in range(offsets):
+        f_idx = 0
+        for x,y in zip(x_files,y_files):
+            if f_idx > sample_len-1:
+                break
+            x = cv2.imread(x)
+            x = cv2.resize(x,(shape[1],shape[0]))
+            x = cv2.cvtColor(x,cv2.COLOR_BGR2GRAY)
+            y = cv2.imread(y)
+            y = cv2.resize(y,(shape[1],shape[0]))
+            y = cv2.cvtColor(y,cv2.COLOR_BGR2GRAY)
+
+
+            if channels == 2:
+                flow_frame = np.zeros(shape+(2,))
+                flow_frame[...,0] = x
+                flow_frame[...,1] = y
+            if channels == 3:
+                mag, ang = cv2.cartToPolar(x,y)
+                hsv[...,0] = ang*180/np.pi/2
+                hsv[...,2] = cv2.normalize(mag,None,0,255,cv2.NORM_MINMAX)
+                flow_frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_BGR2GRAY)
+                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_GRAY2BGR)
+
+            flow_frames.append(flow_frame)
+
+            flow_frame = flow_frame.transpose(2,0,1)
+            flow_frame = torch.from_numpy(flow_frame).float()
+            # if len(frames):
+            #     print((frame==frames[-1]).all())
+            for c in range(channels):
+                flow_frame[c,...] -= mean[c]
+                flow_frame[c,...] /= std[c]
+            flow[o,:,f_idx,:,:] = flow_frame
+            f_idx += 1
+        if f_idx < sample_len:
+            flow[o,:,f_idx:sample_len,:,:] = flow[o,:,f_idx:f_idx+1,:,:]
+    if not len(flow_frames):
+        return False, False
+    # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
+    if streams > 1:
+        if isinstance(sample_rate,int):
+            sample_rate = [sample_rate]*streams
+        stream_copies = [flow.clone()] * streams
+        # resample each copy of the input at it's respective sample rate
+        for s in range(streams):
+            stream_copies[s] = stream_copies[s][:,:,::sample_rate[s],...]
+        flow = stream_copies
+    else:
+        flow = flow[:,:,::sample_rate,...]
+    return flow,flow_frames
+
 def show_image(img,name):
     cv2.imshow(name,img)
     cv2.waitKey(0)
@@ -398,10 +498,10 @@ def write_video(path,frames,**kwargs):
         path (str): the path to the video file.
         frames (list of np.ndarrays): list of frames to write to the video
     """
-    # with imageio.get_writer(path, mode='I', **kargs) as writer:
-    #     for frame in frames:
-    #         frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-    #         writer.append_data(frame)
+    with imageio.get_writer(path, mode='I', **kargs) as writer:
+        for frame in frames:
+            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+            writer.append_data(frame)
 
 def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sample_rate=1, **kwargs):
     """
