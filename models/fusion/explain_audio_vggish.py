@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch import hub
 
 from . import vggish_params
-import torchexplain
+from ... import torchexplain
 
 """
 

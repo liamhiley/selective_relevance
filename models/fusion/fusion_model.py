@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-import torchexplain
-import models.explain_audio_vggish as explain_audio_vggish
-import models.explain_video_mobilenet as explain_video_mobilenet
+from ... import torchexplain
+from . import explain_audio_vggish as explain_audio_vggish
+from . import explain_video_mobilenet as explain_video_mobilenet
 
 
 class ExplainAudioVideoMidFusion(nn.Module):

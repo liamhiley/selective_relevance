@@ -5,4 +5,4 @@ __all__ = [
     "vggish_params"
 ]
 
-from . import *
+from . import fusion_model
