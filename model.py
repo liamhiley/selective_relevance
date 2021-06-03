@@ -33,7 +33,8 @@ model_dict = {
     "mars": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "mers": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "resneXt3d_152": partial(resnet3d.generate_model,model_depth=152,cardinality=32,in_planes=64,train=False),
-    "slowfast_4x16_R50": partial(slowfast.slowfast_4x16,train=False)
+    "slowfast_4x16_R50": partial(slowfast.slowfast_4x16,train=False),
+    "vggish_mobilenet_fusion": partial(fusion.fusion_model.generate_model,train=False)
 }
 
 def get_model(arch, num_classes,weights_path="", **kwargs):
@@ -75,7 +76,10 @@ def load_model(model,weights_path,is_caffe=False, map_loc="cpu", is_parallel=Fal
             nweights[k] = v.clone().detach()
         model.load_state_dict(nweights,strict=True)
     if not (freeze is None):
-        layers = list(model.children())[:freeze]
+        if freeze == "all":
+            layers = list(model.children())
+        else:
+            layers = list(model.children())[:freeze]
         for l in layers:
             for p in l.parameters():
                 p.requires_grad = False
