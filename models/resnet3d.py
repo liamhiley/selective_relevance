@@ -181,7 +181,8 @@ class ResNeXtBottleneck(nn.Module):
         if self.training:
             out += residual
         else:
-            out = self.lib.add(out,residual)
+            out += residual
+            # out = self.lib.add(out,residual)
         out = self.relu(out)
 
         return out
@@ -193,7 +194,7 @@ class ResNet(nn.Module):
                  layers,
                  block_inplanes,
                  in_planes=None,
-                 n_input_channels=3,
+                 channels=3,
                  conv1_t_size=7,
                  conv1_t_stride=1,
                  no_max_pool=False,
@@ -219,14 +220,14 @@ class ResNet(nn.Module):
         self.no_max_pool = no_max_pool
 
         if train:
-            self.conv1 = self.lib.Conv3d(n_input_channels,
+            self.conv1 = self.lib.Conv3d(channels,
                                    self.in_planes,
                                    kernel_size=(conv1_t_size, 7, 7),
                                    stride=(conv1_t_stride, 2, 2),
                                    padding=(conv1_t_size // 2, 3, 3),
                                    bias=False)
         else:
-            self.conv1 = self.lib.Conv3d(n_input_channels,
+            self.conv1 = self.lib.Conv3d(channels,
                                          self.in_planes,
                                          kernel_size=(conv1_t_size, 7, 7),
                                          stride=(conv1_t_stride, 2, 2),
