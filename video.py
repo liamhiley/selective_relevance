@@ -61,8 +61,12 @@ def get_video_list(
     # get abs paths for class folders
     class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
     # remainder of videos to be sampled randomly
-    if isinstance(eval(vid_list[0]),tuple):
-        if num_vids == len(set([eval(v)[0] for v in vid_list])):
+    try:
+        vid_list = [eval(v) for v in vid_list]
+    except SyntaxError:
+        pass
+    if isinstance(vid_list[0],tuple):
+        if num_vids == len(set([v[0] for v in vid_list])):
             return vid_list
     if num_vids == len(vid_list):
         return vid_list
@@ -163,8 +167,6 @@ class VideoDataset(Dataset):
     def __getitem__(self, idx):
         start, stop = (0,-1)
         path = self.vid_list[idx]
-        if isinstance(path,str):
-            path = eval(path)
         if isinstance(path,tuple):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
@@ -247,7 +249,7 @@ class FlowDataset(VideoDataset):
                 flow[:,c,...] /= self.std[c]
         elif self.extension in supported_imgs:
             flow, flow_frames = get_flow_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
-                  sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate,
+                  sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate, extension=self.extension,
                   start=start, stop=stop, channels=self.channels, **self.kwargs)
         return (flow, flow_frames), (activity, path)
 
@@ -422,7 +424,7 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
     x_files = sorted(x_files)
     y_files = sorted(y_files)
 
-    if stop:
+    if stop>0:
         frame_files = frame_files[start:stop]
     offsets = math.ceil(len(frame_files)/sample_len)
     if shape is None:
@@ -435,7 +437,10 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
     for o in range(offsets):
         f_idx = 0
         for x,y in zip(x_files,y_files):
-            if f_idx > sample_len-1:
+            if f_idx < o*sample_len:
+                f_idx += 1
+                continue
+            if f_idx > (o+1)*sample_len-1:
                 break
             x = cv2.imread(x)
             x = cv2.resize(x,(shape[1],shape[0]))
@@ -466,10 +471,10 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
             for c in range(channels):
                 flow_frame[c,...] -= mean[c]
                 flow_frame[c,...] /= std[c]
-            flow[o,:,f_idx,:,:] = flow_frame
+            flow[o,:,f_idx-o*sample_len,:,:] = flow_frame
             f_idx += 1
-        if f_idx < sample_len:
-            flow[o,:,f_idx:sample_len,:,:] = flow[o,:,f_idx:f_idx+1,:,:]
+        if f_idx+1 < sample_len:
+            flow[o,:,f_idx-o*sample_len:sample_len,:,:] = flow[o,:,f_idx-o*sample_len:f_idx-o*sample_len+1,:,:]
     if not len(flow_frames):
         return False, False
     # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
