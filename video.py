@@ -21,7 +21,7 @@ supported_vids = [
     '.avi'
 ]
 
-def get_video_list(
+def get_sample_list(
         dataset_path,
         num_vids=-1,
         cache_file="",
@@ -46,26 +46,26 @@ def get_video_list(
             number of samples for each class is calculated. Viable
             options are uniform/proportional
     Returns:
-        vid_list (list of str): list of absolute file names to read videos from when generating results.
+        sample_list (list of str): list of absolute file names to read videos from when generating results.
     """
-    vid_list = []
+    sample_list = []
     if cache_file:
         # prepend cache list to list of samples
         cache_list = open(cache_file,"r").readlines()
         cache_list = [c[:-1] for c in cache_list]
         if cache_list:
-            vid_list += cache_list
+            sample_list += cache_list
     if not class_list:
         # default class_list
         class_list = os.listdir(dataset_path)
     # get abs paths for class folders
     class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
     # remainder of videos to be sampled randomly
-    if isinstance(eval(vid_list[0]),tuple):
-        if num_vids == len(set([eval(v)[0] for v in vid_list])):
-            return vid_list
-    if num_vids == len(vid_list):
-        return vid_list
+    if isinstance(eval(sample_list[0]),tuple):
+        if num_vids == len(set([eval(v)[0] for v in sample_list])):
+            return sample_list
+    if num_vids == len(sample_list):
+        return sample_list
     dataset_size = 0
     sample_list = []
     for c in class_list:
@@ -98,37 +98,37 @@ def get_video_list(
         weights = []
         for samples in sample_list:
             weight = round(
-                (num_vids-len(vid_list))*len(samples)/dataset_size
+                (num_vids-len(sample_list))*len(samples)/dataset_size
             )
             weights.append(weight)
     else:
         weights = [1]*len(class_list)
 
     if num_vids < dataset_size:
-        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(vid_list)))
+        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(sample_list)))
 
         for c in sample_key:
             sample = random.choice(sample_list[c])
-            while sample in vid_list:
+            while sample in sample_list:
                 sample = random.choice(sample_list[c])
-            vid_list += [sample]
+            sample_list += [sample]
     else:
-        vid_list = [s for c in sample_list for s in c]
+        sample_list = [s for c in sample_list for s in c]
     if train:
-        n_vid_list = []
-        for v in tqdm(vid_list):
+        n_sample_list = []
+        for v in tqdm(sample_list):
             if extension in supported_imgs:
                 len_vid = len(os.listdir(v))
             elif extension in supported_vids:
                 len_vid = cv2.VideoCapture(v).get(cv2.CAP_PROP_FRAME_COUNT)
             offsets = math.ceil(len_vid / sample_len)
             for f_idx in range(0,len_vid,sample_len):
-                n_vid_list.append((v,f_idx,f_idx+sample_len))
-        vid_list = n_vid_list
+                n_sample_list.append((v,f_idx,f_idx+sample_len))
+        sample_list = n_sample_list
     with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
-        for v in vid_list:
+        for v in sample_list:
             f.write(str(v)+'\n')
-    return vid_list
+    return sample_list
 
 class VideoDataset(Dataset):
     def __init__(
@@ -146,7 +146,7 @@ class VideoDataset(Dataset):
         **kwargs
     ):
         self.dataset_path = dataset_path
-        self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
+        self.sample_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
         self.classes = class_list
         self.shape = shape
         self.mean = mean
@@ -158,11 +158,11 @@ class VideoDataset(Dataset):
         self.kwargs = kwargs
 
     def __len__(self):
-        return len(self.vid_list)
+        return len(self.sample_list)
 
     def __getitem__(self, idx):
         start, stop = (0,-1)
-        path = self.vid_list[idx]
+        path = self.sample_list[idx]
         if isinstance(path,str):
             path = eval(path)
         if isinstance(path,tuple):
@@ -222,11 +222,11 @@ class FlowDataset(VideoDataset):
         self.channels=channels
 
     def __len__(self):
-        return len(self.vid_list)
+        return len(self.sample_list)
 
     def __getitem__(self,idx):
         start, stop = (0,-1)
-        path = self.vid_list[idx]
+        path = self.sample_list[idx]
         if isinstance(path,str):
             path = eval(path)
         if isinstance(path,tuple):
@@ -261,6 +261,46 @@ class FlowDataset(VideoDataset):
         vid = torch.cat(vid,dim=0)
         n_gts = torch.tensor(n_gts)
         return (vid, frames), (n_gts, path)
+
+class VideoAudio(VideoDataset):
+    def __init__(
+        self,
+        dataset_path,
+        class_list,
+        shape=(None,None),
+        mean=(
+            [0,0,0],
+            [0,0,0]
+        ),
+        std=(
+            [1,1,1],
+            [1,1,1]
+        ),
+        sample_len=[16000,16],
+        streams=2,
+        sample_rate=[1,1],
+        extension=('.wav','.avi'),
+        device='cpu',
+        **kwargs
+    ):
+        self.dataset_path = dataset_path
+        aud_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[0], sample_len=sample_len, **kwargs)
+        vid_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[1], sample_len=sample_len, **kwargs)
+        self.sample_list = zip(aud_list,vid_list)
+        self.classes = class_list
+        self.shape = shape
+        self.mean = mean
+        self.std = std
+        self.sample_len = sample_len
+        self.streams = streams
+        self.sample_rate = sample_rate
+        self.extension = extension
+        self.kwargs = kwargs
+
+
+
+
+
 
 def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
     """
