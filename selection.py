@@ -174,8 +174,9 @@ class SelectiveRelevanceExplainer:
             frames = []
             for f in files:
                 fname = f.split('/')[-1]
-                if fname[:len(prefix)] == prefix:
+                if fname.startswith(prefix) and fname.endswith(('.png','.jpg')):
                     frames.append(f"{path}/{f}")
+            frames = sorted(frames,key=lambda x: int(x.split('.')[0].split('_')[-1]))
             frames = [self.get_exp_from_file(f) for f in frames]
             expl_vid = torch.stack(frames,0)
         return expl_vid
