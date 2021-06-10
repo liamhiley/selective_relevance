@@ -5,7 +5,7 @@ __all__ = [
     "mars",
     "slowfast",
     "s3dg",
-    "fusion"
+    "vggish_mobilenet_fusion"
 ]
 
 from . import c3d
@@ -13,4 +13,4 @@ from . import resnet3d
 from . import mars
 from . import slowfast
 from . import s3dg
-from . import fusion
+from . import vggish_mobilenet_fusion

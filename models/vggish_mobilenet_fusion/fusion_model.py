@@ -18,13 +18,6 @@ class ExplainAudioVideoMidFusion(nn.Module):
         else:
             self.lib = torchexplain
 
-        vggish_urls = {
-            'vggish': 'https://github.com/harritaylor/torchvggish/'
-                      'releases/download/v0.1/vggish-10086976.pth',
-            'pca': 'https://github.com/harritaylor/torchvggish/'
-                   'releases/download/v0.1/vggish_pca_params-970ea276.pth'
-        }
-
         # -*- Audio model -*-
         # Define audio subnetwork
         audio_model = explain_audio_vggish.VGGish(urls=vggish_urls,
@@ -36,14 +29,6 @@ class ExplainAudioVideoMidFusion(nn.Module):
         # -*- Video model -*-
         # Define video subnetwork
         video_model = explain_video_mobilenet.get_model(num_classes=600, train=train).to(device)
-        # Load weights to video_mobilenet model
-        checkpoint = torch.load("models/kinetics_mobilenet_1.0x_RGB_16_best.pth", map_location={"cuda:0":device})
-        state_dict = dict()
-        for k in list(checkpoint['state_dict'].keys()):
-            # each "key" has the word "module." in it.
-            # use indexing to remove that.
-            state_dict[k[7:]] = checkpoint['state_dict'].pop(k)
-        video_model.load_state_dict(state_dict,strict=False)
 
         # do away with the last layer
         self.video_model = video_model.features
@@ -67,6 +52,6 @@ class ExplainAudioVideoMidFusion(nn.Module):
 def generate_model(
     num_classes,
     train=False,
-    device
+    device='cpu'
 ):
     return ExplainAudioVideoMidFusion(num_classes,train,device)
