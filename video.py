@@ -1,13 +1,18 @@
 import os
+import math
+import random
+
 import torch
 from torch.utils.data import Dataset, DataLoader
-import math
+
 import numpy as np
+
 import imageio
 import cv2
-import random
-# import imageio
+import soundfile as sf
+
 from . import robust_pca
+
 import pdb
 from tqdm import tqdm
 
@@ -48,6 +53,7 @@ def get_sample_list(
     Returns:
         sample_list (list of str): list of absolute file names to read videos from when generating results.
     """
+    pdb.set_trace()
     sample_list = []
     if cache_file:
         # prepend cache list to list of samples
@@ -62,16 +68,16 @@ def get_sample_list(
     class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
     # remainder of videos to be sampled randomly
     if isinstance(eval(sample_list[0]),tuple):
-        if num_vids == len(set([eval(v)[0] for v in sample_list])):
+        if num_samples == len(set([eval(v)[0] for v in sample_list])):
             return sample_list
-    if num_vids == len(sample_list):
+    if num_samples == len(sample_list):
         return sample_list
     dataset_size = 0
     sample_list = []
     for c in class_list:
         samples = os.listdir(c)
         # get absolute path of all video files in class folder
-        if extension in supported_vids:
+        if extension in supported_samples:
             samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
         else:
             new_samples = []
@@ -87,8 +93,8 @@ def get_sample_list(
         num_samples = len(samples)
         sample_list.append(samples)
         dataset_size += num_samples
-    if num_vids == -1:
-        num_vids = dataset_size
+    if num_samples == -1:
+        num_samples = dataset_size
     if sampling_method == "proportional":
         # get weighted number of samples for each class, according to their
         # percentage size within the entire dataset
@@ -98,14 +104,14 @@ def get_sample_list(
         weights = []
         for samples in sample_list:
             weight = round(
-                (num_vids-len(sample_list))*len(samples)/dataset_size
+                (num_samples-len(sample_list))*len(samples)/dataset_size
             )
             weights.append(weight)
     else:
         weights = [1]*len(class_list)
 
-    if num_vids < dataset_size:
-        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(sample_list)))
+    if num_samples < dataset_size:
+        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_samples-len(sample_list)))
 
         for c in sample_key:
             sample = random.choice(sample_list[c])
@@ -116,18 +122,18 @@ def get_sample_list(
         sample_list = [s for c in sample_list for s in c]
     if train:
         n_sample_list = []
-        for v in tqdm(sample_list):
+        for s in tqdm(sample_list):
             if extension in supported_imgs:
-                len_vid = len(os.listdir(v))
+                len_s = len(os.listdir(s))
             elif extension in supported_vids:
-                len_vid = cv2.VideoCapture(v).get(cv2.CAP_PROP_FRAME_COUNT)
-            offsets = math.ceil(len_vid / sample_len)
-            for f_idx in range(0,len_vid,sample_len):
-                n_sample_list.append((v,f_idx,f_idx+sample_len))
+                len_s = cv2.VideoCapture(s).get(cv2.CAP_PROP_FRAME_COUNT)
+            offsets = math.ceil(len_s / sample_len)
+            for f_idx in range(0,len_s,sample_len):
+                n_sample_list.append((s,f_idx,f_idx+sample_len))
         sample_list = n_sample_list
     with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
-        for v in sample_list:
-            f.write(str(v)+'\n')
+        for s in sample_list:
+            f.write(str(s)+'\n')
     return sample_list
 
 class VideoDataset(Dataset):
@@ -169,11 +175,11 @@ class VideoDataset(Dataset):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
         if self.extension in supported_vids:
-            return get_input(f"{path}", self.shape, self.mean, self.std,
+            return get_video(f"{path}", self.shape, self.mean, self.std,
                   self.sample_len, self.streams, self.sample_rate, start, stop,
                   **self.kwargs), (activity, path)
         elif self.extension in supported_imgs:
-            return get_input_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
+            return get_video_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
                   sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate,
                   start=start, stop=stop, **self.kwargs), (activity, path)
 
@@ -233,7 +239,7 @@ class FlowDataset(VideoDataset):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
         if self.extension in supported_vids:
-            vid, frames = get_input(f"{path}", self.shape, self.mean, self.std,
+            vid, frames = get_video(f"{path}", self.shape, self.mean, self.std,
                   self.sample_len, self.streams, self.sample_rate, start, stop,
                   **self.kwargs)
             shape = vid.shape
@@ -288,6 +294,11 @@ class VideoAudio(VideoDataset):
         vid_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[1], sample_len=sample_len, **kwargs)
         self.sample_list = zip(aud_list,vid_list)
         self.classes = class_list
+        if isinstance(shape,(int,float)):
+            shape = (shape,)*4
+        assert isinstance(shape,(list,tuple))
+        if len(shape) == 2:
+            shape = shape*2
         self.shape = shape
         self.mean = mean
         self.std = std
@@ -297,12 +308,38 @@ class VideoAudio(VideoDataset):
         self.extension = extension
         self.kwargs = kwargs
 
+    def __getitem__(self, idx):
+        start, stop = (0,-1)
+        aud_path, vid_path = self.sample_list[idx]
+        if isinstance(aud_path, tuple):
+            aud_path, astart, astop = aud_path
+        if isinstance(vid_path, tuple):
+            vid_path, vstart, vstop = vid_path
+
+        activity = self.classes.index(vid_path.split('/')[-2])
+
+        aud = get_audio(path, shape=self.shape[0], mean=self.mean[0],std=self.std[0],sample_len=self.sample_len[0],streams=1,sample_rate=self.sample_rate[0],start=start,stop=stop)
+
+        if self.extension in supported_vids:
+            if stop == None:
+                stop=-1
+            vid = get_video(path, shape=self.shape, mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
+
+
+        elif self.extension in supported_imgs:
+            vid = get_video_from_frames(path, shape=self.shape[1], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1],
+                  start=start, stop=stop, **self.kwargs)
+
+
+        return ((vid, aud),frames), (activity, path)
 
 
 
 
 
-def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
+
+
+def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
     """
     Read in video from file and store in a torch.Tensor.
 
@@ -369,7 +406,7 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         vid = vid[:,:,::sample_rate,...]
     return vid,frames
 
-def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, **kwargs):
+def get_video_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, **kwargs):
     """
     Read images from directory and compile into 4D tensor
     Args:
@@ -393,6 +430,8 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
 
     if stop:
         frame_files = frame_files[start:stop]
+    elif start:
+        frame_files = frame_files[start:]
     offsets = math.ceil(len(frame_files)/sample_len)
     if shape is None:
         first = cv2.imread(frame_files[0])
@@ -437,7 +476,7 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
         vid = vid[:,:,::sample_rate,...]
     return vid,frames
 
-def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, channels=3, **kwargs):
+def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='.png', start=0, stop=None, channels=3, **kwargs):
     """
     Read images from directory and compile into 4D tensor
     Args:
@@ -464,6 +503,8 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
 
     if stop:
         frame_files = frame_files[start:stop]
+    elif start:
+        frame_files = frame_files[start:]
     offsets = math.ceil(len(frame_files)/sample_len)
     if shape is None:
         first = cv2.imread(frame_files[0])
@@ -525,6 +566,10 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
         flow = flow[:,:,::sample_rate,...]
     return flow,flow_frames
 
+def get_audio(path, shape=None, mean=[0,0,0], std=[1,1,1], sample_len=16000, streams=1, sample_rate=1, extension='.wav', start=0, stop=None, channels=3, **kwargs):
+    wav_data, fs = sf.read(audio_clip_path)
+    pdb.set_trace()
+    print(fs)
 def show_image(img,name):
     cv2.imshow(name,img)
     cv2.waitKey(0)
