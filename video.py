@@ -26,9 +26,13 @@ supported_vids = [
     '.avi'
 ]
 
+supported_aud = [
+    '.wav'
+]
+
 def get_sample_list(
         dataset_path,
-        num_vids=-1,
+        num_samples=-1,
         cache_file="",
         class_list=[],
         sampling_method="uniform",
@@ -42,7 +46,7 @@ def get_sample_list(
     Args:
         dataset_path (str): the absolute path to the dataset folder on your
             system.
-        num_vids (int): the desired length of the return list
+        num_samples (int): the desired length of the return list
         cache_file (str, default:""): a list of video names saved to disk,
             these are prepended to the list before generating
         class_list (list of str, default:[]): if your dataset folder has
@@ -53,7 +57,6 @@ def get_sample_list(
     Returns:
         sample_list (list of str): list of absolute file names to read videos from when generating results.
     """
-    pdb.set_trace()
     sample_list = []
     if cache_file:
         # prepend cache list to list of samples
@@ -71,17 +74,26 @@ def get_sample_list(
         sample_list = [eval(s) for s in sample_list]
     except SyntaxError:
         pass
+    if isinstance(sample_list[0],str):
+        for i in range(len(sample_list)):
+            if not sample_list[i].endswith(extension):
+                sample_list[i] += extension
+    elif isinstance(sample_list[0],tuple):
+        for i in range(len(sample_list)):
+            if not sample_list[i][0].endswith(extension):
+                sample_list[i][0] += extension
+
     if isinstance(sample_list[0],tuple):
-        if num_samples == len(set([s[0] for s in sample_list])):
-            return sample_list
-    if num_samples == len(sample_list):
-        return sample_list
+        if num_samples <= len(set([s[0] for s in sample_list])):
+            return sample_list[:num_samples]
+    if num_samples <= len(sample_list):
+        return sample_list[:num_samples]
     dataset_size = 0
     sample_list = []
     for c in class_list:
         samples = os.listdir(c)
         # get absolute path of all video files in class folder
-        if extension in supported_samples:
+        if extension in supported_vids or extension in supported_aud:
             samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
         else:
             new_samples = []
@@ -135,10 +147,24 @@ def get_sample_list(
             for f_idx in range(0,len_s,sample_len):
                 n_sample_list.append((s,f_idx,f_idx+sample_len))
         sample_list = n_sample_list
-    with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
-        for s in sample_list:
-            f.write(str(s)+'\n')
     return sample_list
+
+class ToTensorSpect(object):
+    def __init__(self):
+        config = dict(
+            sr=16000,
+            n_fft=400,
+            n_mels=64,
+            hop_length=160,
+            window='hann',
+            center=False,
+            pad_mode='reflect',
+            htk=True,
+            fmin=125,
+            fmax=7500,
+            device='cpu'
+        )
+        self.to_spec = Spectogram.MelSpectogram(**config)
 
 class VideoDataset(Dataset):
     def __init__(
@@ -195,7 +221,6 @@ class VideoDataset(Dataset):
         vid = torch.cat(vid,dim=0)
         n_gts = torch.tensor(n_gts)
         return (vid, frames), (n_gts, path)
-
 
 class FlowDataset(VideoDataset):
     def __init__(
@@ -294,7 +319,7 @@ class VideoAudio(VideoDataset):
         self.dataset_path = dataset_path
         aud_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[0], sample_len=sample_len, **kwargs)
         vid_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[1], sample_len=sample_len, **kwargs)
-        self.sample_list = zip(aud_list,vid_list)
+        self.sample_list = list(zip(aud_list,vid_list))
         self.classes = class_list
         if isinstance(shape,(int,float)):
             shape = (shape,)*4
@@ -311,6 +336,7 @@ class VideoAudio(VideoDataset):
         self.kwargs = kwargs
 
     def __getitem__(self, idx):
+        pdb.set_trace()
         start, stop = (0,-1)
         aud_path, vid_path = self.sample_list[idx]
         if isinstance(aud_path, tuple):
@@ -320,12 +346,12 @@ class VideoAudio(VideoDataset):
 
         activity = self.classes.index(vid_path.split('/')[-2])
 
-        aud = get_audio(path, shape=self.shape[0], mean=self.mean[0],std=self.std[0],sample_len=self.sample_len[0],streams=1,sample_rate=self.sample_rate[0],start=start,stop=stop)
+        aud = get_audio(aud_path, shape=self.shape[0], mean=self.mean[0],std=self.std[0],sample_len=self.sample_len[0],streams=1,sample_rate=self.sample_rate[0],start=start,stop=stop)
 
         if self.extension in supported_vids:
             if stop == None:
                 stop=-1
-            vid = get_video(path, shape=self.shape, mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
+            vid = get_video(vid_path, shape=self.shape, mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
 
 
         elif self.extension in supported_imgs:
@@ -572,9 +598,17 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
     return flow,flow_frames
 
 def get_audio(path, shape=None, mean=[0,0,0], std=[1,1,1], sample_len=16000, streams=1, sample_rate=1, extension='.wav', start=0, stop=None, channels=3, **kwargs):
-    wav_data, fs = sf.read(audio_clip_path)
-    pdb.set_trace()
-    print(fs)
+    audio, fs = libr.load(path,sr=sample_len)
+    if len(audio.shape) > 1:
+        audio = libr.to_mono(audio)
+    if len(audio) < sample_len:
+        pad = np.zeros(sample_len-len(audio))
+        audio = np.append(audio,pad)
+    audio = audio[:sample_len]
+    for t in self.transforms:
+        audio = t(audio)
+    return audio
+
 def show_image(img,name):
     cv2.imshow(name,img)
     cv2.waitKey(0)
