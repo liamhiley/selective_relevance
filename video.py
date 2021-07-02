@@ -9,7 +9,9 @@ import numpy as np
 
 import imageio
 import cv2
-import soundfile as sf
+import librosa as libr
+
+from nnAudio import Spectrogram
 
 from . import robust_pca
 
@@ -162,9 +164,12 @@ class ToTensorSpect(object):
             htk=True,
             fmin=125,
             fmax=7500,
-            device='cpu'
         )
-        self.to_spec = Spectogram.MelSpectogram(**config)
+        self.to_spec = Spectrogram.MelSpectrogram(**config)
+    def __call__(self, audio):
+        audio = audio.float()
+        return self.to_spec(audio)
+
 
 class VideoDataset(Dataset):
     def __init__(
@@ -178,7 +183,6 @@ class VideoDataset(Dataset):
         streams=1,
         sample_rate=1,
         extension='.mp4',
-        device='cpu',
         **kwargs
     ):
         self.dataset_path = dataset_path
@@ -235,7 +239,6 @@ class FlowDataset(VideoDataset):
         sample_rate=1,
         extension='.mp4',
         motion_compensation = False,
-        device='cpu',
         channels=3,
         **kwargs
     ):
@@ -295,7 +298,7 @@ class FlowDataset(VideoDataset):
         n_gts = torch.tensor(n_gts)
         return (vid, frames), (n_gts, path)
 
-class VideoAudio(VideoDataset):
+class AudioVideoDataset(VideoDataset):
     def __init__(
         self,
         dataset_path,
@@ -313,7 +316,6 @@ class VideoAudio(VideoDataset):
         streams=2,
         sample_rate=[1,1],
         extension=('.wav','.avi'),
-        device='cpu',
         **kwargs
     ):
         self.dataset_path = dataset_path
@@ -335,8 +337,9 @@ class VideoAudio(VideoDataset):
         self.extension = extension
         self.kwargs = kwargs
 
+        self.audio_transforms = [ToTensorSpect()]
+
     def __getitem__(self, idx):
-        pdb.set_trace()
         start, stop = (0,-1)
         aud_path, vid_path = self.sample_list[idx]
         if isinstance(aud_path, tuple):
@@ -347,24 +350,27 @@ class VideoAudio(VideoDataset):
         activity = self.classes.index(vid_path.split('/')[-2])
 
         aud = get_audio(aud_path, shape=self.shape[0], mean=self.mean[0],std=self.std[0],sample_len=self.sample_len[0],streams=1,sample_rate=self.sample_rate[0],start=start,stop=stop)
+        batches = []
+        for batch in aud:
+            for t in self.audio_transforms:
+                batch= t(batch)
+            batches.append(batch)
+        aud = torch.stack(batches)
 
-        if self.extension in supported_vids:
+        if self.extension[1] in supported_vids:
             if stop == None:
                 stop=-1
-            vid = get_video(vid_path, shape=self.shape, mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
+            vid, frames = get_video(vid_path, shape=self.shape[2:], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
 
 
-        elif self.extension in supported_imgs:
-            vid = get_video_from_frames(path, shape=self.shape[1], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1],
+        elif self.extension[1] in supported_imgs:
+            vid, frames = get_video_from_frames(path, shape=self.shape[2:], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1],
                   start=start, stop=stop, **self.kwargs)
 
 
-        return ((vid, aud),frames), (activity, path)
-
-
-
-
-
+        aud = aud[:min(len(aud),len(vid))]
+        vid = vid[:min(len(aud),len(vid))]
+        return ([aud, vid],frames), (activity, vid_path[:len(vid_path)-len(self.extension[1])])
 
 
 def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
@@ -387,7 +393,9 @@ def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         frames (list of (np.ndarray)): A list of frames
     """
     rdr = cv2.VideoCapture(path)
-    offsets = math.ceil(rdr.get(cv2.CAP_PROP_FRAME_COUNT)/sample_len)
+    if stop < 0:
+        stop = rdr.get(cv2.CAP_PROP_FRAME_COUNT)
+    offsets = math.ceil(stop/sample_len)
     if shape is None:
         shape = (int(rdr.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(rdr.get(cv2.CAP_PROP_FRAME_WIDTH)))
     else:
@@ -405,13 +413,18 @@ def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
             r, frame = rdr.read()
             if not r:
                 break
-            frame = cv2.resize(frame,(shape[1],shape[0]))
+            # frame = cv2.resize(frame,(shape[1],shape[0]))
+            y = int((frame.shape[0] - shape[0])/2)
+            x = int((frame.shape[1] - shape[1])/2)
+            frame = frame[y:-y,x:-x]
             frames.append(frame)
             frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
             frame = frame.transpose(2,0,1)
             frame = torch.from_numpy(frame).float()
             # if len(frames):
             #     print((frame==frames[-1]).all())
+            # FUSION: REMOVE LATER
+            frame /= 255
             for c in range(3):
                 frame[c,...] -= mean[c]
                 frame[c,...] /= std[c]
@@ -482,6 +495,8 @@ def get_video_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
             frame = torch.from_numpy(frame).float()
             # if len(frames):
             #     print((frame==frames[-1]).all())
+            if mean[0]<1:
+                frame /= 255
             for c in range(3):
                 frame[c,...] -= mean[c]
                 frame[c,...] /= std[c]
@@ -597,16 +612,19 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
         flow = flow[:,:,::sample_rate,...]
     return flow,flow_frames
 
-def get_audio(path, shape=None, mean=[0,0,0], std=[1,1,1], sample_len=16000, streams=1, sample_rate=1, extension='.wav', start=0, stop=None, channels=3, **kwargs):
+def get_audio(path, shape=None, mean=[0,0,0], std=[1,1,1], sample_len=16000, streams=1, sample_rate=1, extension='.wav', start=0, stop=None, channels=1, **kwargs):
     audio, fs = libr.load(path,sr=sample_len)
-    if len(audio.shape) > 1:
+    if len(audio.shape) > channels:
         audio = libr.to_mono(audio)
     if len(audio) < sample_len:
         pad = np.zeros(sample_len-len(audio))
         audio = np.append(audio,pad)
-    audio = audio[:sample_len]
-    for t in self.transforms:
-        audio = t(audio)
+    batches = torch.from_numpy(audio).split(sample_len)
+    if not len(audio) % sample_len == 0:
+        audio = batches[:-1]
+    else:
+        audio = batches
+    audio = torch.stack(audio)
     return audio
 
 def show_image(img,name):
