@@ -8,6 +8,7 @@ from . import explain_video_mobilenet as explain_video_mobilenet
 class ExplainAudioVideoMidFusion(nn.Module):
     def __init__(self,
                  nb_classes,
+                 range=None,
                  train=False,
                  device="cpu"
                 ):
@@ -20,7 +21,7 @@ class ExplainAudioVideoMidFusion(nn.Module):
 
         # -*- Audio model -*-
         # Define audio subnetwork
-        audio_model = explain_audio_vggish.VGGish(urls=vggish_urls,
+        audio_model = explain_audio_vggish.VGGish(urls=None,
                                           preprocess=False,
                                           postprocess=False,
                                           train=train).to(device)
@@ -28,7 +29,7 @@ class ExplainAudioVideoMidFusion(nn.Module):
 
         # -*- Video model -*-
         # Define video subnetwork
-        video_model = explain_video_mobilenet.get_model(num_classes=600, train=train).to(device)
+        video_model = explain_video_mobilenet.get_model(num_classes=600, train=train, range=range).to(device)
 
         # do away with the last layer
         self.video_model = video_model.features
@@ -36,7 +37,8 @@ class ExplainAudioVideoMidFusion(nn.Module):
         # Create new classifier
         self.classifier = self.lib.Linear(1024 + 128, nb_classes)
 
-    def forward(self, x_audio, x_video):
+    def forward(self, inp):
+        x_audio, x_video = inp
         x_audio = self.audio_model(x_audio)
         x_audio = x_audio.view(x_audio.size(0), -1)
 
@@ -51,7 +53,9 @@ class ExplainAudioVideoMidFusion(nn.Module):
 
 def generate_model(
     num_classes,
+    range=range,
     train=False,
-    device='cpu'
+    device='cpu',
+    **kwargs
 ):
-    return ExplainAudioVideoMidFusion(num_classes,train,device)
+    return ExplainAudioVideoMidFusion(num_classes,range,train,device)

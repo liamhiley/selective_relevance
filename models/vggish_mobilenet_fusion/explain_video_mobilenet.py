@@ -12,7 +12,7 @@ from ... import torchexplain
 import pdb
 lib = torchexplain
 
-def conv_bn(inp, oup, stride):
+def conv_bn(inp, oup, stride, range=range):
     return nn.Sequential(
         lib.Conv3d(inp, oup, kernel_size=3, stride=stride, padding=(1,1,1), bias=False,range=(-2.9614062262808107,3.887405778629379)),
         lib.BatchNorm3d(oup),
@@ -36,7 +36,7 @@ class Block(nn.Module):
 
 
 class MobileNet(nn.Module):
-    def __init__(self, num_classes=600, sample_size=224, width_mult=1., train=False):
+    def __init__(self, num_classes=600, sample_size=224, width_mult=1., train=False, **kwargs):
         super(MobileNet, self).__init__()
         input_channel = 32
         last_channel = 1024
@@ -50,7 +50,7 @@ class MobileNet(nn.Module):
             [512,  6, (2,2,2)],
             [1024, 2, (1,1,1)],
         ]
-        self.first = conv_bn(3, input_channel, (1,2,2))
+        self.first = conv_bn(3, input_channel, (1,2,2), range=range)
         self.features = [conv_bn(3, input_channel, (1,2,2))]
         # building inverted residual blocks
         for c, n, s in cfg:

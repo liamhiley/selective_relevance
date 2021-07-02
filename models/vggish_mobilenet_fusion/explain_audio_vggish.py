@@ -176,7 +176,7 @@ def _vgg(train):
 
 
 class VGGish(VGG):
-    def __init__(self, urls, pretrained=True, preprocess=True, postprocess=True, progress=True, train=False):
+    def __init__(self, urls, pretrained=False, preprocess=True, postprocess=True, progress=True, train=False):
         super().__init__(make_layers(train=train))
         if pretrained:
             state_dict = hub.load_state_dict_from_url(urls['vggish'], progress=progress)
