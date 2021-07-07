@@ -129,9 +129,9 @@ def get_video_list(
             for f_idx in range(0,len_vid,sample_len):
                 n_vid_list.append((v,f_idx,f_idx+sample_len))
         vid_list = n_vid_list
-    with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
-        for v in vid_list:
-            f.write(str(v)+'\n')
+    # with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
+    #     for v in vid_list:
+    #         f.write(str(v)+'\n')
     return vid_list
 
 class VideoDataset(Dataset):
@@ -229,8 +229,6 @@ class FlowDataset(VideoDataset):
     def __getitem__(self,idx):
         start, stop = (0,-1)
         path = self.vid_list[idx]
-        if isinstance(path,str):
-            path = eval(path)
         if isinstance(path,tuple):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
@@ -285,6 +283,8 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
     """
     rdr = cv2.VideoCapture(path)
     offsets = math.ceil(rdr.get(cv2.CAP_PROP_FRAME_COUNT)/sample_len)
+    if stop < 0:
+        stop = rdr.get(cv2.CAP_PROP_FRAME_COUNT)
     if shape is None:
         shape = (int(rdr.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(rdr.get(cv2.CAP_PROP_FRAME_WIDTH)))
     else:
@@ -490,24 +490,6 @@ def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=
         flow = flow[:,:,::sample_rate,...]
     return flow,flow_frames
 
-def show_image(img,name):
-    cv2.imshow(name,img)
-    cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
-def write_video(path,frames,**kwargs):
-    """
-    Write to an .mp4 file from a list of frames
-
-    Args:
-        path (str): the path to the video file.
-        frames (list of np.ndarrays): list of frames to write to the video
-    """
-    with imageio.get_writer(path, mode='I', **kargs) as writer:
-        for frame in frames:
-            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
-            writer.append_data(frame)
-
 def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sample_rate=1, **kwargs):
     """
     For a list of frames from a video, generate the Dense (Farneback) optical flow fields between each
@@ -552,10 +534,12 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
         flow = []
         f1 = frames[0]
         hsv = np.zeros_like(f1)
+        optical_flow = cv2.optflow.DualTVL1OpticalFlow_create()
         f1 = cv2.cvtColor(f1,cv2.COLOR_BGR2GRAY)
         for f_idx in range(1,len(frames)):
             f2 = cv2.cvtColor(frames[f_idx],cv2.COLOR_BGR2GRAY)
-            flow.append(cv2.calcOpticalFlowFarneback(f1,f2,None,0.5,3,15,3,5,1.2,0))
+            # flow.append(cv2.calcOpticalFlowFarneback(f1,f2,None,0.5,3,15,3,5,1.2,0))
+            flow.append(optical_flow.calc(f1,f2,None))
         if motion_compensation:
             flow, metric = remove_cam_motion(flow,motion_compensation,**kwargs)
         for i,cart in enumerate(flow):
@@ -569,6 +553,25 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
     if motion_compensation:
         return flow, metric
     return flow
+
+def show_image(img,name):
+    cv2.imshow(name,img)
+    cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+def write_video(path,frames,**kwargs):
+    """
+    Write to an .mp4 file from a list of frames
+
+    Args:
+        path (str): the path to the video file.
+        frames (list of np.ndarrays): list of frames to write to the video
+    """
+    with imageio.get_writer(path, mode='I', **kargs) as writer:
+        for frame in frames:
+            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+            writer.append_data(frame)
+
 
 def remove_cam_motion(
         flow,
