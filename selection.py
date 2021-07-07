@@ -352,8 +352,8 @@ class SelectiveRelevanceExplainer:
         expl_tensor = self.normalise(expl_tensor)
 
         # temp relevance booster for clarity
-        rel_mask = expl_tensor!=0
-        expl_tensor[rel_mask] += np.minimum(1-expl_tensor[rel_mask],0.05)
+        # rel_mask = expl_tensor!=0
+        # expl_tensor[rel_mask] += np.minimum(1-expl_tensor[rel_mask],0.05)
         #
 
 
