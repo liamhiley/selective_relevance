@@ -30,6 +30,7 @@ model_dict = {
     "resnet3d_200": partial(resnet3d.generate_model,model_depth=200,train=False),
     "resneXt3d_50": partial(resnet3d.generate_model, model_depth=50,cardinality=32,in_planes=64,train=False),
     "resneXt3d_101": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
+    "flow": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "mars": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "mers": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "resneXt3d_152": partial(resnet3d.generate_model,model_depth=152,cardinality=32,in_planes=64,train=False),
