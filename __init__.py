@@ -2,5 +2,5 @@
 
 from . import torchexplain
 from . import model
-from . import video
+from . import data
 from . import selection

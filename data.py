@@ -1,13 +1,20 @@
 import os
+import math
+import random
+
 import torch
 from torch.utils.data import Dataset, DataLoader
-import math
+
 import numpy as np
+
 import imageio
 import cv2
-import random
-# import imageio
+import librosa as libr
+
+from nnAudio import Spectrogram
+
 from . import robust_pca
+
 import pdb
 from tqdm import tqdm
 
@@ -21,9 +28,13 @@ supported_vids = [
     '.avi'
 ]
 
-def get_video_list(
+supported_aud = [
+    '.wav'
+]
+
+def get_sample_list(
         dataset_path,
-        num_vids=-1,
+        num_samples=-1,
         cache_file="",
         class_list=[],
         sampling_method="uniform",
@@ -37,7 +48,7 @@ def get_video_list(
     Args:
         dataset_path (str): the absolute path to the dataset folder on your
             system.
-        num_vids (int): the desired length of the return list
+        num_samples (int): the desired length of the return list
         cache_file (str, default:""): a list of video names saved to disk,
             these are prepended to the list before generating
         class_list (list of str, default:[]): if your dataset folder has
@@ -46,15 +57,15 @@ def get_video_list(
             number of samples for each class is calculated. Viable
             options are uniform/proportional
     Returns:
-        vid_list (list of str): list of absolute file names to read videos from when generating results.
+        sample_list (list of str): list of absolute file names to read videos from when generating results.
     """
-    vid_list = []
+    sample_list = []
     if cache_file:
         # prepend cache list to list of samples
         cache_list = open(cache_file,"r").readlines()
         cache_list = [c[:-1] for c in cache_list]
         if cache_list:
-            vid_list += cache_list
+            sample_list += cache_list
     if not class_list:
         # default class_list
         class_list = os.listdir(dataset_path)
@@ -62,20 +73,29 @@ def get_video_list(
     class_list = [os.path.join(dataset_path,c) for c in class_list if os.path.isdir(os.path.join(dataset_path,c))]
     # remainder of videos to be sampled randomly
     try:
-        vid_list = [eval(v) for v in vid_list]
+        sample_list = [eval(s) for s in sample_list]
     except SyntaxError:
         pass
-    if isinstance(vid_list[0],tuple):
-        if num_vids == len(set([v[0] for v in vid_list])):
-            return vid_list
-    if num_vids == len(vid_list):
-        return vid_list
+    if isinstance(sample_list[0],str):
+        for i in range(len(sample_list)):
+            if not sample_list[i].endswith(extension):
+                sample_list[i] += extension
+    elif isinstance(sample_list[0],tuple):
+        for i in range(len(sample_list)):
+            if not sample_list[i][0].endswith(extension):
+                sample_list[i][0] += extension
+
+    if isinstance(sample_list[0],tuple):
+        if num_samples <= len(set([s[0] for s in sample_list])):
+            return sample_list[:num_samples]
+    if num_samples <= len(sample_list):
+        return sample_list[:num_samples]
     dataset_size = 0
     sample_list = []
     for c in class_list:
         samples = os.listdir(c)
         # get absolute path of all video files in class folder
-        if extension in supported_vids:
+        if extension in supported_vids or extension in supported_aud:
             samples = [os.path.join(c,s) for s in samples if s.endswith(extension)]
         else:
             new_samples = []
@@ -91,8 +111,8 @@ def get_video_list(
         num_samples = len(samples)
         sample_list.append(samples)
         dataset_size += num_samples
-    if num_vids == -1:
-        num_vids = dataset_size
+    if num_samples == -1:
+        num_samples = dataset_size
     if sampling_method == "proportional":
         # get weighted number of samples for each class, according to their
         # percentage size within the entire dataset
@@ -102,37 +122,53 @@ def get_video_list(
         weights = []
         for samples in sample_list:
             weight = round(
-                (num_vids-len(vid_list))*len(samples)/dataset_size
+                (num_samples-len(sample_list))*len(samples)/dataset_size
             )
             weights.append(weight)
     else:
         weights = [1]*len(class_list)
 
-    if num_vids < dataset_size:
-        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_vids-len(vid_list)))
+    if num_samples < dataset_size:
+        sample_key = sorted(random.choices(list(range(len(weights))),weights=weights,k=num_samples-len(sample_list)))
 
         for c in sample_key:
             sample = random.choice(sample_list[c])
-            while sample in vid_list:
+            while sample in sample_list:
                 sample = random.choice(sample_list[c])
-            vid_list += [sample]
+            sample_list += [sample]
     else:
-        vid_list = [s for c in sample_list for s in c]
+        sample_list = [s for c in sample_list for s in c]
     if train:
-        n_vid_list = []
-        for v in tqdm(vid_list):
+        n_sample_list = []
+        for s in tqdm(sample_list):
             if extension in supported_imgs:
-                len_vid = len(os.listdir(v))
+                len_s = len(os.listdir(s))
             elif extension in supported_vids:
-                len_vid = cv2.VideoCapture(v).get(cv2.CAP_PROP_FRAME_COUNT)
-            offsets = math.ceil(len_vid / sample_len)
-            for f_idx in range(0,len_vid,sample_len):
-                n_vid_list.append((v,f_idx,f_idx+sample_len))
-        vid_list = n_vid_list
-    # with open("/mnt/hdd/datasets/PHAV/phav_v2-img/cache.txt",'w') as f:
-    #     for v in vid_list:
-    #         f.write(str(v)+'\n')
-    return vid_list
+                len_s = cv2.VideoCapture(s).get(cv2.CAP_PROP_FRAME_COUNT)
+            offsets = math.ceil(len_s / sample_len)
+            for f_idx in range(0,len_s,sample_len):
+                n_sample_list.append((s,f_idx,f_idx+sample_len))
+        sample_list = n_sample_list
+    return sample_list
+
+class ToTensorSpect(object):
+    def __init__(self):
+        config = dict(
+            sr=16000,
+            n_fft=400,
+            n_mels=64,
+            hop_length=160,
+            window='hann',
+            center=False,
+            pad_mode='reflect',
+            htk=True,
+            fmin=125,
+            fmax=7500,
+        )
+        self.to_spec = Spectrogram.MelSpectrogram(**config)
+    def __call__(self, audio):
+        audio = audio.float()
+        return self.to_spec(audio)
 
 class VideoDataset(Dataset):
     def __init__(
@@ -146,11 +182,10 @@ class VideoDataset(Dataset):
         streams=1,
         sample_rate=1,
         extension='.mp4',
-        device='cpu',
         **kwargs
     ):
         self.dataset_path = dataset_path
-        self.vid_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
+        self.sample_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
         self.classes = class_list
         self.shape = shape
         self.mean = mean
@@ -162,7 +197,7 @@ class VideoDataset(Dataset):
         self.kwargs = kwargs
 
     def __len__(self):
-        return len(self.vid_list)
+        return len(self.sample_list)
 
     def __getitem__(self, idx):
         start, stop = (0,-1)
@@ -171,11 +206,11 @@ class VideoDataset(Dataset):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
         if self.extension in supported_vids:
-            return get_input(f"{path}", self.shape, self.mean, self.std,
+            return get_video(f"{path}", self.shape, self.mean, self.std,
                   self.sample_len, self.streams, self.sample_rate, start, stop,
                   **self.kwargs), (activity, path)
         elif self.extension in supported_imgs:
-            return get_input_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
+            return get_video_from_frames(f"{path}", shape=self.shape, mean=self.mean, std=self.std,
                   sample_len=self.sample_len, streams=self.streams, sample_rate=self.sample_rate,
                   start=start, stop=stop, **self.kwargs), (activity, path)
 
@@ -190,7 +225,6 @@ class VideoDataset(Dataset):
         n_gts = torch.tensor(n_gts)
         return (vid, frames), (n_gts, path)
 
-
 class FlowDataset(VideoDataset):
     def __init__(
         self,
@@ -204,7 +238,6 @@ class FlowDataset(VideoDataset):
         sample_rate=1,
         extension='.mp4',
         motion_compensation = False,
-        device='cpu',
         channels=3,
         **kwargs
     ):
@@ -224,16 +257,18 @@ class FlowDataset(VideoDataset):
         self.channels=channels
 
     def __len__(self):
-        return len(self.vid_list)
+        return len(self.sample_list)
 
     def __getitem__(self,idx):
         start, stop = (0,-1)
-        path = self.vid_list[idx]
+        path = self.sample_list[idx]
+        if isinstance(path,str):
+            path = eval(path)
         if isinstance(path,tuple):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
         if self.extension in supported_vids:
-            vid, frames = get_input(f"{path}", self.shape, self.mean, self.std,
+            vid, frames = get_video(f"{path}", self.shape, self.mean, self.std,
                   self.sample_len, self.streams, self.sample_rate, start, stop,
                   **self.kwargs)
             shape = vid.shape
@@ -262,7 +297,82 @@ class FlowDataset(VideoDataset):
         n_gts = torch.tensor(n_gts)
         return (vid, frames), (n_gts, path)
 
-def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
+class AudioVideoDataset(VideoDataset):
+    def __init__(
+        self,
+        dataset_path,
+        class_list,
+        shape=(None,None),
+        mean=(
+            [0,0,0],
+            [0,0,0]
+        ),
+        std=(
+            [1,1,1],
+            [1,1,1]
+        ),
+        sample_len=[16000,16],
+        streams=2,
+        sample_rate=[1,1],
+        extension=('.wav','.avi'),
+        **kwargs
+    ):
+        self.dataset_path = dataset_path
+        aud_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[0], sample_len=sample_len, **kwargs)
+        vid_list = get_sample_list(dataset_path, class_list=class_list, extension=extension[1], sample_len=sample_len, **kwargs)
+        self.sample_list = list(zip(aud_list,vid_list))
+        self.classes = class_list
+        if isinstance(shape,(int,float)):
+            shape = (shape,)*4
+        assert isinstance(shape,(list,tuple))
+        if len(shape) == 2:
+            shape = shape*2
+        self.shape = shape
+        self.mean = mean
+        self.std = std
+        self.sample_len = sample_len
+        self.streams = streams
+        self.sample_rate = sample_rate
+        self.extension = extension
+        self.kwargs = kwargs
+
+        self.audio_transforms = [ToTensorSpect()]
+
+    def __getitem__(self, idx):
+        start, stop = (0,-1)
+        aud_path, vid_path = self.sample_list[idx]
+        if isinstance(aud_path, tuple):
+            aud_path, astart, astop = aud_path
+        if isinstance(vid_path, tuple):
+            vid_path, vstart, vstop = vid_path
+
+        activity = self.classes.index(vid_path.split('/')[-2])
+
+        aud = get_audio(aud_path, shape=self.shape[0], mean=self.mean[0],std=self.std[0],sample_len=self.sample_len[0],streams=1,sample_rate=self.sample_rate[0],start=start,stop=stop)
+        batches = []
+        for batch in aud:
+            for t in self.audio_transforms:
+                batch= t(batch)
+            batches.append(batch)
+        aud = torch.stack(batches)
+
+        if self.extension[1] in supported_vids:
+            if stop == None:
+                stop=-1
+            vid, frames = get_video(vid_path, shape=self.shape[2:], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1], start=start, stop=stop, **self.kwargs)
+
+
+        elif self.extension[1] in supported_imgs:
+            vid, frames = get_video_from_frames(path, shape=self.shape[2:], mean=self.mean[1], std=self.std[1], sample_len=self.sample_len[1], streams=1, sample_rate=self.sample_rate[1],
+                  start=start, stop=stop, **self.kwargs)
+
+
+        aud = aud[:min(len(aud),len(vid))]
+        vid = vid[:min(len(aud),len(vid))]
+        return ([aud, vid],frames), (activity, vid_path[:len(vid_path)-len(self.extension[1])])
+
+
+def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, start=0, stop=-1, **kwargs):
     """
     Read in video from file and store in a torch.Tensor.
 
@@ -282,9 +392,9 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         frames (list of (np.ndarray)): A list of frames
     """
     rdr = cv2.VideoCapture(path)
-    offsets = math.ceil(rdr.get(cv2.CAP_PROP_FRAME_COUNT)/sample_len)
     if stop < 0:
         stop = rdr.get(cv2.CAP_PROP_FRAME_COUNT)
+    offsets = math.ceil(stop/sample_len)
     if shape is None:
         shape = (int(rdr.get(cv2.CAP_PROP_FRAME_HEIGHT)),int(rdr.get(cv2.CAP_PROP_FRAME_WIDTH)))
     else:
@@ -302,13 +412,18 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
             r, frame = rdr.read()
             if not r:
                 break
-            frame = cv2.resize(frame,(shape[1],shape[0]))
+            # frame = cv2.resize(frame,(shape[1],shape[0]))
+            y = int((frame.shape[0] - shape[0])/2)
+            x = int((frame.shape[1] - shape[1])/2)
+            frame = frame[y:-y,x:-x]
             frames.append(frame)
             frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
             frame = frame.transpose(2,0,1)
             frame = torch.from_numpy(frame).float()
             # if len(frames):
             #     print((frame==frames[-1]).all())
+            # FUSION: REMOVE LATER
+            frame /= 255
             for c in range(3):
                 frame[c,...] -= mean[c]
                 frame[c,...] /= std[c]
@@ -331,7 +446,7 @@ def get_input(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
         vid = vid[:,:,::sample_rate,...]
     return vid,frames
 
-def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, **kwargs):
+def get_video_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, **kwargs):
     """
     Read images from directory and compile into 4D tensor
     Args:
@@ -355,6 +470,8 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
 
     if stop:
         frame_files = frame_files[start:stop]
+    elif start:
+        frame_files = frame_files[start:]
     offsets = math.ceil(len(frame_files)/sample_len)
     if shape is None:
         first = cv2.imread(frame_files[0])
@@ -377,6 +494,8 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
             frame = torch.from_numpy(frame).float()
             # if len(frames):
             #     print((frame==frames[-1]).all())
+            if mean[0]<1:
+                frame /= 255
             for c in range(3):
                 frame[c,...] -= mean[c]
                 frame[c,...] /= std[c]
@@ -398,97 +517,6 @@ def get_input_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len
     else:
         vid = vid[:,:,::sample_rate,...]
     return vid,frames
-
-def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='', start=0, stop=-1, channels=3, **kwargs):
-    """
-    Read images from directory and compile into 4D tensor
-    Args:
-        path (str): the path to the frame directory.
-        shape (tuple/list of int,optional): the desired shape to resize each frame to.
-        mean (tuple/list of int,optional): channel-wise mean to center the channels of each frame around, in RGB format.
-        std (tuple/list of int,optional): channel-wise standard deviation to scale the channels of each frame by, in RGB format.
-        sample_len (int,optional): the length in frames of each sample expected by the model, the video will be split
-            into batches accordingly.
-        streams (int, default: 1): the number of streams the target model will have, we repeat the input accordingly so
-            that each stream has a copy of the input.
-        sample_rate (int/tuple/list, default: 1): frames for the video will be sampled at a rate of 1/sample_rate, if multiple
-            streams, then a sample_rate must be provided for each of them
-    Returns:
-        vid (torch.Tensor): The processed video with BxCxTxHxW shape.
-        frames (list of (np.ndarray)): A list of frames
-    """
-    frame_files = os.listdir(path)
-    frame_files = [f"{path}/{f}" for f in frame_files if f.endswith(extension)]
-    x_files = [f for f in frame_files if 'x' in f]
-    y_files = [f for f in frame_files if 'y' in f]
-    x_files = sorted(x_files)
-    y_files = sorted(y_files)
-
-    if stop>0:
-        frame_files = frame_files[start:stop]
-    offsets = math.ceil(len(frame_files)/sample_len)
-    if shape is None:
-        first = cv2.imread(frame_files[0])
-        shape = first.shape[:-1]
-    else:
-        shape = tuple(shape)
-    flow = torch.zeros((offsets,channels,sample_len) + shape)
-    flow_frames = []
-    for o in range(offsets):
-        f_idx = 0
-        for x,y in zip(x_files,y_files):
-            if f_idx < o*sample_len:
-                f_idx += 1
-                continue
-            if f_idx > (o+1)*sample_len-1:
-                break
-            x = cv2.imread(x)
-            x = cv2.resize(x,(shape[1],shape[0]))
-            x = cv2.cvtColor(x,cv2.COLOR_BGR2GRAY)
-            y = cv2.imread(y)
-            y = cv2.resize(y,(shape[1],shape[0]))
-            y = cv2.cvtColor(y,cv2.COLOR_BGR2GRAY)
-
-
-            if channels == 2:
-                flow_frame = np.zeros(shape+(2,))
-                flow_frame[...,0] = x
-                flow_frame[...,1] = y
-            if channels == 3:
-                mag, ang = cv2.cartToPolar(x,y)
-                hsv[...,0] = ang*180/np.pi/2
-                hsv[...,2] = cv2.normalize(mag,None,0,255,cv2.NORM_MINMAX)
-                flow_frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_BGR2GRAY)
-                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_GRAY2BGR)
-
-            flow_frames.append(flow_frame)
-
-            flow_frame = flow_frame.transpose(2,0,1)
-            flow_frame = torch.from_numpy(flow_frame).float()
-            # if len(frames):
-            #     print((frame==frames[-1]).all())
-            for c in range(channels):
-                flow_frame[c,...] -= mean[c]
-                flow_frame[c,...] /= std[c]
-            flow[o,:,f_idx-o*sample_len,:,:] = flow_frame
-            f_idx += 1
-        if f_idx+1 < sample_len:
-            flow[o,:,f_idx-o*sample_len:sample_len,:,:] = flow[o,:,f_idx-o*sample_len:f_idx-o*sample_len+1,:,:]
-    if not len(flow_frames):
-        return False, False
-    # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
-    if streams > 1:
-        if isinstance(sample_rate,int):
-            sample_rate = [sample_rate]*streams
-        stream_copies = [flow.clone()] * streams
-        # resample each copy of the input at it's respective sample rate
-        for s in range(streams):
-            stream_copies[s] = stream_copies[s][:,:,::sample_rate[s],...]
-        flow = stream_copies
-    else:
-        flow = flow[:,:,::sample_rate,...]
-    return flow,flow_frames
 
 def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sample_rate=1, **kwargs):
     """
@@ -554,6 +582,132 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
         return flow, metric
     return flow
 
+def get_flow_from_frames(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams=1, sample_rate=1, extension='.png', start=0, stop=None, channels=3, **kwargs):
+    """
+    Read images from directory and compile into 4D tensor
+    Args:
+        path (str): the path to the frame directory.
+        shape (tuple/list of int,optional): the desired shape to resize each frame to.
+        mean (tuple/list of int,optional): channel-wise mean to center the channels of each frame around, in RGB format.
+        std (tuple/list of int,optional): channel-wise standard deviation to scale the channels of each frame by, in RGB format.
+        sample_len (int,optional): the length in frames of each sample expected by the model, the video will be split
+            into batches accordingly.
+        streams (int, default: 1): the number of streams the target model will have, we repeat the input accordingly so
+            that each stream has a copy of the input.
+        sample_rate (int/tuple/list, default: 1): frames for the video will be sampled at a rate of 1/sample_rate, if multiple
+            streams, then a sample_rate must be provided for each of them
+    Returns:
+        vid (torch.Tensor): The processed video with BxCxTxHxW shape.
+        frames (list of (np.ndarray)): A list of frames
+    """
+    frame_files = os.listdir(path)
+    frame_files = [f"{path}/{f}" for f in frame_files if f.endswith(extension)]
+    x_files = [f for f in frame_files if 'x' in f]
+    y_files = [f for f in frame_files if 'y' in f]
+    x_files = sorted(x_files)
+    y_files = sorted(y_files)
+
+    if stop>0:
+        frame_files = frame_files[start:stop]
+    elif start:
+        frame_files = frame_files[start:]
+    offsets = math.ceil(len(frame_files)/sample_len)
+    if shape is None:
+        first = cv2.imread(frame_files[0])
+        shape = first.shape[:-1]
+    else:
+        shape = tuple(shape)
+    flow = torch.zeros((offsets,channels,sample_len) + shape)
+    flow_frames = []
+    for o in range(offsets):
+        f_idx = 0
+        for x,y in zip(x_files,y_files):
+            if f_idx < o*sample_len:
+                f_idx += 1
+                continue
+            if f_idx > (o+1)*sample_len-1:
+                break
+            x = cv2.imread(x)
+            x = cv2.resize(x,(shape[1],shape[0]))
+            x = cv2.cvtColor(x,cv2.COLOR_BGR2GRAY)
+            y = cv2.imread(y)
+            y = cv2.resize(y,(shape[1],shape[0]))
+            y = cv2.cvtColor(y,cv2.COLOR_BGR2GRAY)
+
+
+            if channels == 2:
+                flow_frame = np.zeros(shape+(2,))
+                flow_frame[...,0] = x
+                flow_frame[...,1] = y
+            if channels == 3:
+                mag, ang = cv2.cartToPolar(x,y)
+                hsv[...,0] = ang*180/np.pi/2
+                hsv[...,2] = cv2.normalize(mag,None,0,255,cv2.NORM_MINMAX)
+                flow_frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_BGR2GRAY)
+                flow_frame = cv2.cvtColor(flow_frame, cv2.COLOR_GRAY2BGR)
+
+            flow_frames.append(flow_frame)
+
+            flow_frame = flow_frame.transpose(2,0,1)
+            flow_frame = torch.from_numpy(flow_frame).float()
+            # if len(frames):
+            #     print((frame==frames[-1]).all())
+            for c in range(channels):
+                flow_frame[c,...] -= mean[c]
+                flow_frame[c,...] /= std[c]
+            flow[o,:,f_idx-o*sample_len,:,:] = flow_frame
+            f_idx += 1
+        if f_idx+1 < sample_len:
+            flow[o,:,f_idx-o*sample_len:sample_len,:,:] = flow[o,:,f_idx-o*sample_len:f_idx-o*sample_len+1,:,:]
+    if not len(flow_frames):
+        return False, False
+    # some models work with multiple streams, e.g. slowfast, where you need input to each stream   
+    if streams > 1:
+        if isinstance(sample_rate,int):
+            sample_rate = [sample_rate]*streams
+        stream_copies = [flow.clone()] * streams
+        # resample each copy of the input at it's respective sample rate
+        for s in range(streams):
+            stream_copies[s] = stream_copies[s][:,:,::sample_rate[s],...]
+        flow = stream_copies
+    else:
+        flow = flow[:,:,::sample_rate,...]
+    return flow,flow_frames
+
+def get_audio(path, shape=None, mean=[0,0,0], std=[1,1,1], sample_len=16000, streams=1, sample_rate=1, extension='.wav', start=0, stop=None, channels=1, **kwargs):
+    audio, fs = libr.load(path,sr=sample_len)
+    if len(audio.shape) > channels:
+        audio = libr.to_mono(audio)
+    if len(audio) < sample_len:
+        pad = np.zeros(sample_len-len(audio))
+        audio = np.append(audio,pad)
+    batches = torch.from_numpy(audio).split(sample_len)
+    if not len(audio) % sample_len == 0:
+        audio = batches[:-1]
+    else:
+        audio = batches
+    audio = torch.stack(audio)
+    return audio
+
+def show_image(img,name):
+    cv2.imshow(name,img)
+    cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+def write_video(path,frames,**kwargs):
+    """
+    Write to an .mp4 file from a list of frames
+
+    Args:
+        path (str): the path to the video file.
+        frames (list of np.ndarrays): list of frames to write to the video
+    """
+    with imageio.get_writer(path, mode='I', **kargs) as writer:
+        for frame in frames:
+            frame = cv2.cvtColor(frame,cv2.COLOR_BGR2RGB)
+            writer.append_data(frame)
+
 def show_image(img,name):
     cv2.imshow(name,img)
     cv2.waitKey(0)
@@ -610,12 +764,12 @@ def remove_cam_motion(
         v = cart[...,1].reshape(-1)
         m[(1+f)*2] = m[f*2] + u
         m[1+(1+f)*2] = m[1+f*2] + v
-    # # Perform low rank optimisation on M to find A and E s.t. M=A+E using r-pca
+    # Perform low rank optimisation on M to find A and E s.t. M=A+E using r-pca
     rpca = robust_pca.R_pca(m)
     # Given the low rank representation, we can assume from [1] that:
     # A accounts for camera and rigid body motion
     # E accounts for articulated motion
-    A, E = rpca.fit(max_iter=1, iter_print=1000)
+    A, E = rpca.fit(max_iter=1000, iter_print=1000)
     # Further from [1] if we assume camera motion IS present then
     # A_c, a subset of A containing camera motion, is dominant in A.
     U, S, V = torch.svd(A)

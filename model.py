@@ -35,7 +35,7 @@ model_dict = {
     "mers": partial(resnet3d.generate_model,model_depth=101,cardinality=32,in_planes=64,train=False),
     "resneXt3d_152": partial(resnet3d.generate_model,model_depth=152,cardinality=32,in_planes=64,train=False),
     "slowfast_4x16_R50": partial(slowfast.slowfast_4x16,train=False),
-    "vggish_mobilenet_fusion": partial(fusion.fusion_model.generate_model,train=False)
+    "vggish_mobilenet_fusion": partial(vggish_mobilenet_fusion.fusion_model.generate_model,train=False)
 }
 
 def get_model(arch, num_classes,weights_path="", **kwargs):
