@@ -185,7 +185,7 @@ class VideoDataset(Dataset):
         **kwargs
     ):
         self.dataset_path = dataset_path
-        self.sample_list = get_video_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
+        self.sample_list = get_sample_list(dataset_path, class_list=class_list, extension=extension, sample_len=sample_len, **kwargs)
         self.classes = class_list
         self.shape = shape
         self.mean = mean
@@ -262,8 +262,6 @@ class FlowDataset(VideoDataset):
     def __getitem__(self,idx):
         start, stop = (0,-1)
         path = self.sample_list[idx]
-        if isinstance(path,str):
-            path = eval(path)
         if isinstance(path,tuple):
             path, start, stop = path
         activity = self.classes.index(path.split('/')[-2])
@@ -413,6 +411,16 @@ def get_video(path, shape=None, mean=[0,0,0], std=[1,1,1],sample_len=16, streams
             if not r:
                 break
             # frame = cv2.resize(frame,(shape[1],shape[0]))
+            resize = []
+            for old,new in zip(frame.shape,shape):
+                if new < old:
+                    resize = [old] + resize
+                else:
+                    resize = [new+2] + resize
+            if resize:
+                resize = tuple(resize)
+                frame = cv2.resize(frame,resize)
+
             y = int((frame.shape[0] - shape[0])/2)
             x = int((frame.shape[1] - shape[1])/2)
             frame = frame[y:-y,x:-x]
@@ -568,6 +576,7 @@ def generate_optical_flow(frames=[], motion_compensation=False, streams=1, sampl
             f2 = cv2.cvtColor(frames[f_idx],cv2.COLOR_BGR2GRAY)
             # flow.append(cv2.calcOpticalFlowFarneback(f1,f2,None,0.5,3,15,3,5,1.2,0))
             flow.append(optical_flow.calc(f1,f2,None))
+            f1 = f2.copy()
         if motion_compensation:
             flow, metric = remove_cam_motion(flow,motion_compensation,**kwargs)
         for i,cart in enumerate(flow):
